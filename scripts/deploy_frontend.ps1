@@ -10,7 +10,19 @@ if (-not (Test-Path $frontendRoot)) {
 
 Push-Location $frontendRoot
 try {
-  pnpm run buildUi
+  Push-Location "libs\react-client"
+  try {
+    pnpm run build
+  } finally {
+    Pop-Location
+  }
+
+  Push-Location "frontend"
+  try {
+    pnpm run build
+  } finally {
+    Pop-Location
+  }
 } finally {
   Pop-Location
 }
