@@ -5,7 +5,6 @@
     // no-op
   }
   const ROOT_ID = "cl-profile-root";
-  const RAIL_ID = "cl-mini-rail";
   const FLYOUT_ID = "cl-profile-flyout";
   const BTN_ID = "cl-profile-button";
   const NAME_ID = "cl-profile-name";
@@ -26,8 +25,6 @@
   function destroyRoot() {
     const root = document.getElementById(ROOT_ID);
     if (root) root.remove();
-    const rail = document.getElementById(RAIL_ID);
-    if (rail) rail.remove();
   }
 
   function isLoginScreen() {
@@ -66,6 +63,7 @@
 
   function getSidebarHost() {
     const selectors = [
+      "[data-sidebar='sidebar']",
       "[data-testid='chat-sidebar']",
       "[data-testid='sidebar']",
       "nav[aria-label*='history' i]",
@@ -90,6 +88,7 @@
           text.includes("new chat") ||
           text.includes("search") ||
           text.includes("history") ||
+          el.getAttribute("data-sidebar") === "sidebar" ||
           el.querySelector("[data-testid='new-chat-button']") ||
           el.querySelector("button[aria-label*='new chat' i]");
         if (!hasHistoryHints) continue;
@@ -113,9 +112,8 @@
         sidebar.appendChild(root);
       }
       root.classList.add("cl-profile-in-sidebar");
-      const width = Math.max(160, sidebar.clientWidth - 24);
-      root.style.width = `${width}px`;
-      root.style.maxWidth = `${width}px`;
+      root.style.width = "";
+      root.style.maxWidth = "";
       return;
     }
 
@@ -131,85 +129,12 @@
     return Boolean(sidebarCollapsedState);
   }
 
-  function clickFirst(selectors) {
-    for (const selector of selectors) {
-      const el = document.querySelector(selector);
-      if (el instanceof HTMLElement) {
-        el.click();
-        return true;
-      }
-    }
-    return false;
-  }
-
-  function createMiniRail() {
-    if (document.getElementById(RAIL_ID)) return;
-    const rail = document.createElement("div");
-    rail.id = RAIL_ID;
-    rail.className = "cl-mini-rail";
-    rail.innerHTML = `
-      <button class="cl-mini-btn" data-action="open" title="Open sidebar">||</button>
-      <button class="cl-mini-btn" data-action="search" title="Search">S</button>
-      <button class="cl-mini-btn" data-action="new-chat" title="New chat">N</button>
-      <div class="cl-mini-divider"></div>
-      <button class="cl-mini-btn" data-action="profile" title="Profile">${profile.initials || "U"}</button>
-    `;
-    document.body.appendChild(rail);
-
-    rail.querySelectorAll(".cl-mini-btn").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const action = btn.getAttribute("data-action");
-        if (action === "open") {
-          clickFirst(["button[aria-label*='open sidebar' i]"]);
-          return;
-        }
-        if (action === "search") {
-          const opened = clickFirst(["button[aria-label*='open sidebar' i]"]);
-          setTimeout(() => {
-            clickFirst([
-              "button[aria-label*='search' i]",
-              "[data-testid='search-button']",
-            ]);
-          }, opened ? 120 : 0);
-          return;
-        }
-        if (action === "new-chat") {
-          const opened = clickFirst(["button[aria-label*='open sidebar' i]"]);
-          setTimeout(() => {
-            clickFirst([
-              "button[aria-label*='new chat' i]",
-              "[data-testid='new-chat-button']",
-            ]);
-          }, opened ? 120 : 0);
-          return;
-        }
-        if (action === "profile") {
-          const opened = clickFirst(["button[aria-label*='open sidebar' i]"]);
-          setTimeout(() => {
-            const profileBtn = document.getElementById(BTN_ID);
-            if (profileBtn) profileBtn.click();
-          }, opened ? 140 : 0);
-        }
-      });
-    });
-  }
-
   function updateCollapsedMode() {
-    createMiniRail();
-    const rail = document.getElementById(RAIL_ID);
     const root = document.getElementById(ROOT_ID);
+    if (!(root instanceof HTMLElement)) return;
     const collapsed = isSidebarCollapsed();
-    if (collapsed) {
-      if (root instanceof HTMLElement) {
-        root.classList.add("cl-hidden-when-collapsed");
-      }
-      if (rail) rail.classList.add("open");
-    } else {
-      if (root instanceof HTMLElement) {
-        root.classList.remove("cl-hidden-when-collapsed");
-      }
-      if (rail) rail.classList.remove("open");
-    }
+    root.classList.toggle("cl-collapsed", collapsed);
+    if (collapsed) closeFlyout();
   }
 
   function getSidebarToggleModeFromElement(el) {

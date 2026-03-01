@@ -149,3 +149,20 @@ class AuditLog(TimeStampedModel):
 
     def __str__(self) -> str:
         return f"{self.action} ({self.created_at.isoformat()})"
+
+
+class FavoriteThread(TimeStampedModel):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name="favorite_threads",
+    )
+    thread_id = models.CharField(max_length=255)
+
+    class Meta:
+        unique_together = ("user", "thread_id")
+        ordering = ["-created_at"]
+
+    def __str__(self) -> str:
+        return f"{self.user_id}:{self.thread_id}"

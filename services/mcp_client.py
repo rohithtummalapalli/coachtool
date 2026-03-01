@@ -4,6 +4,7 @@ import logging
 import os
 from typing import Any
 
+import httpx
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 
@@ -143,4 +144,49 @@ async def hydrate_survey_data(user_id: str, survey_rows: Any) -> bool:
     except Exception as exc:
         logger.exception("MCP hydrate failed: %s", exc)
         print(f"[MCP] hydrate failed user_id={user_id}: {exc}", flush=True)
+        return False
+
+
+def _get_django_survey_refresh_url() -> str:
+    configured = os.getenv("DJANGO_SURVEY_DATA_URL", "").strip()
+    if configured:
+        return configured
+    run_addr = os.getenv("DJANGO_RUN_ADDR", "127.0.0.1:8001").strip()
+    if ":" in run_addr:
+        host, port = run_addr.rsplit(":", 1)
+        try:
+            _ = int(port)
+        except ValueError:
+            host, port = run_addr, "8001"
+    else:
+        host, port = run_addr, "8001"
+    return f"http://{host}:{port}/api/accounts/survey-data/"
+
+
+async def refresh_and_hydrate_survey_data(user_id: str) -> bool:
+    if not user_id.strip():
+        return False
+
+    headers: dict[str, str] = {}
+    internal_token = os.getenv("CHAINLIT_INTERNAL_API_TOKEN", "").strip()
+    if internal_token:
+        headers["X-Internal-Token"] = internal_token
+
+    try:
+        async with httpx.AsyncClient(timeout=12.0) as client:
+            res = await client.get(
+                _get_django_survey_refresh_url(),
+                params={"user_id": user_id},
+                headers=headers,
+            )
+        if res.status_code != 200:
+            logger.warning("Survey refresh failed status=%s user_id=%s", res.status_code, user_id)
+            return False
+        payload = res.json() if res.content else {}
+        rows = payload.get("survey_data")
+        if not isinstance(rows, (list, dict)):
+            return False
+        return await hydrate_survey_data(user_id=user_id, survey_rows=rows)
+    except Exception as exc:
+        logger.exception("Survey refresh/hydrate failed: %s", exc)
         return False

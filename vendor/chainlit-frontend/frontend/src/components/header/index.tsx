@@ -25,7 +25,6 @@ import ReadmeButton from './Readme';
 import ShareButton from './Share';
 import SidebarTrigger from './SidebarTrigger';
 import { ThemeToggle } from './ThemeToggle';
-import UserNav from './UserNav';
 
 const Header = memo(() => {
   const { audioConnection } = useAudio();
@@ -113,7 +112,6 @@ const Header = memo(() => {
           </Tooltip>
         )}
         <ThemeToggle />
-        <UserNav />
       </div>
     </div>
   );

@@ -111,7 +111,7 @@ name = "Assistant"
 # default_chat_settings_open = false
 
 # Whether to prompt user confirmation on clicking 'New Chat'
-confirm_new_chat = true
+confirm_new_chat = false
 
 # Description of the assistant. This is used for HTML tags.
 # description = ""
@@ -121,14 +121,14 @@ cot = "full"
 
 # Specify a CSS file that can be used to customize the user interface.
 # The CSS file can be served from the public directory or via an external link.
-custom_css = "/public/chainlit-profile.css?v=10"
+# custom_css = "/public/chainlit-profile.css?v=10"
 
 # Specify additional attributes for a custom CSS file
 # custom_css_attributes = "media=\"print\""
 
 # Specify a JavaScript file that can be used to customize the user interface.
 # The JavaScript file can be served from the public directory.
-custom_js = "/public/chainlit-profile.js?v=10"
+# custom_js = "/public/chainlit-profile.js?v=10"
 
 # The style of alert boxes. Can be "classic" or "modern".
 alert_style = "classic"
@@ -159,6 +159,7 @@ default_avatar_file_url = ""
 # This can be used to customize the frontend code.
 # Be careful: If this is a relative path, it should not start with a slash.
 # custom_build = "./public/build"
+custom_build = "./public/build"
 
 # Specify optional one or more custom links in the header.
 # [[UI.header_links]]
@@ -170,3 +171,5 @@ default_avatar_file_url = ""
 
 [meta]
 generated_by = "2.9.6"
+
+

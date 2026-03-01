@@ -9,63 +9,15 @@
   font-family: "Segoe UI", "Inter", sans-serif;
 }
 
-.cl-mini-rail {
-  position: fixed;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 56px;
-  background: rgba(16, 16, 18, 0.98);
-  border-right: 1px solid rgba(255, 255, 255, 0.12);
-  display: none;
-  flex-direction: column;
-  align-items: center;
-  gap: 10px;
-  padding-top: 10px;
-  z-index: 2147482500;
-}
-
-.cl-mini-rail.open {
-  display: flex;
-}
-
-.cl-mini-btn {
-  width: 34px;
-  height: 34px;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: 10px;
-  background: rgba(42, 42, 46, 0.95);
-  color: #f3f4f6;
-  display: grid;
-  place-items: center;
-  cursor: pointer;
-  font-size: 14px;
-  line-height: 1;
-}
-
-.cl-mini-btn:hover {
-  background: rgba(64, 64, 72, 0.96);
-}
-
-.cl-mini-divider {
-  width: 30px;
-  height: 1px;
-  margin: 2px 0;
-  background: rgba(255, 255, 255, 0.16);
-}
-
 .cl-profile-in-sidebar {
-  position: sticky !important;
+  position: relative !important;
   left: auto !important;
-  bottom: 12px !important;
-  margin: 0 12px 12px !important;
-  width: calc(100% - 24px) !important;
-  max-width: calc(100% - 24px) !important;
+  bottom: auto !important;
+  margin: auto 8px 8px !important;
+  width: auto !important;
+  max-width: none !important;
   z-index: 20 !important;
-}
-
-#cl-profile-root.cl-hidden-when-collapsed {
-  display: none !important;
+  align-self: stretch !important;
 }
 
 .cl-profile-button {
@@ -147,6 +99,30 @@
 .cl-profile-in-sidebar .cl-profile-flyout {
   width: 100%;
   max-width: 100%;
+}
+
+#cl-profile-root.cl-collapsed {
+  width: auto !important;
+  max-width: none !important;
+  margin: auto 6px 8px !important;
+}
+
+#cl-profile-root.cl-collapsed .cl-profile-button {
+  width: 36px !important;
+  height: 36px !important;
+  padding: 4px !important;
+  border-radius: 10px !important;
+  justify-content: center !important;
+}
+
+#cl-profile-root.cl-collapsed .cl-profile-meta {
+  display: none !important;
+}
+
+#cl-profile-root.cl-collapsed .cl-profile-flyout {
+  left: 44px !important;
+  bottom: 0 !important;
+  width: 260px !important;
 }
 
 .cl-profile-flyout.open {

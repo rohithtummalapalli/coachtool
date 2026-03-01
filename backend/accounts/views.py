@@ -4,13 +4,15 @@ import os
 import requests
 from django.contrib.auth.models import Group
 from django.contrib.auth import authenticate
+from django.shortcuts import get_object_or_404
 from rest_framework import generics, viewsets
 from rest_framework.permissions import AllowAny
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import BasePermission
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import MembershipRole, Organization, OrganizationMembership, User
+from .models import FavoriteThread, MembershipRole, Organization, OrganizationMembership, User
 from .permissions import IsOrgAdminOrStaff, IsStaffUser
 from .survey_cache import set_user_survey_dataframe
 from .serializers import (
@@ -22,6 +24,17 @@ from .serializers import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class IsInternalRequest(BasePermission):
+    def has_permission(self, request, view):
+        expected = os.getenv("CHAINLIT_INTERNAL_API_TOKEN", "").strip()
+        provided = (request.headers.get("X-Internal-Token") or "").strip()
+        if expected:
+            return provided == expected
+
+        remote_addr = (request.META.get("REMOTE_ADDR") or "").strip()
+        return remote_addr in {"127.0.0.1", "::1", "localhost"}
 
 
 def get_survey_token() -> str | None:
@@ -203,3 +216,48 @@ class ChainlitLoginAPIView(APIView):
                 "survey_data": survey_data,
             }
         )
+
+
+class FavoriteThreadAPIView(APIView):
+    permission_classes = [IsInternalRequest]
+
+    def get(self, request, *args, **kwargs):
+        user_id = str(request.query_params.get("user_id", "")).strip()
+        if not user_id:
+            return Response({"detail": "user_id is required"}, status=400)
+
+        thread_ids = list(
+            FavoriteThread.objects.filter(user_id=user_id)
+            .values_list("thread_id", flat=True)
+        )
+        return Response({"thread_ids": thread_ids})
+
+    def put(self, request, *args, **kwargs):
+        user_id = str(request.data.get("user_id", "")).strip()
+        thread_id = str(request.data.get("thread_id", "")).strip()
+        is_favorite = bool(request.data.get("is_favorite"))
+
+        if not user_id or not thread_id:
+            return Response({"detail": "user_id and thread_id are required"}, status=400)
+
+        user = get_object_or_404(User, id=user_id)
+
+        if is_favorite:
+            FavoriteThread.objects.get_or_create(user=user, thread_id=thread_id)
+        else:
+            FavoriteThread.objects.filter(user=user, thread_id=thread_id).delete()
+
+        return Response({"success": True})
+
+
+class SurveyDataRefreshAPIView(APIView):
+    permission_classes = [IsInternalRequest]
+
+    def get(self, request, *args, **kwargs):
+        user_id = str(request.query_params.get("user_id", "")).strip()
+        if not user_id:
+            return Response({"detail": "user_id is required"}, status=400)
+
+        user = get_object_or_404(User, id=user_id)
+        survey_data = fetch_user_survey_data(user)
+        return Response({"user_id": user_id, "survey_data": survey_data})

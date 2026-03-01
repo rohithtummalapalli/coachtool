@@ -1,18 +1,27 @@
 import os
+import base64
 import inspect
 import socket
 import subprocess
 import sys
 import asyncio
 import re
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 
 import chainlit as cl
 import httpx
+from fastapi import HTTPException
+from fastapi.responses import FileResponse, JSONResponse
 from chainlit.input_widget import Select, Slider
 from chainlit.data.sql_alchemy import SQLAlchemyDataLayer
+from chainlit.data.storage_clients.base import BaseStorageClient
+from chainlit.data.acl import is_thread_author
+from chainlit.server import app as chainlit_app
+from chainlit.server import get_data_layer as get_chainlit_server_data_layer
+from chainlit.server import UserParam
 from openai import AsyncAzureOpenAI
 import plotly.graph_objects as go
 from sqlalchemy import text
@@ -25,6 +34,91 @@ Path(".files").mkdir(parents=True, exist_ok=True)
 _django_process: subprocess.Popen | None = None
 _django_log_handle = None
 _mcp_process: subprocess.Popen | None = None
+
+
+def _encode_blob_key(blob_key: str) -> str:
+    return base64.urlsafe_b64encode(blob_key.encode("utf-8")).decode("ascii").rstrip("=")
+
+
+def _decode_blob_key(encoded: str) -> str:
+    padding = "=" * (-len(encoded) % 4)
+    return base64.urlsafe_b64decode((encoded + padding).encode("ascii")).decode("utf-8")
+
+
+class LocalFileStorageClient(BaseStorageClient):
+    def __init__(self, root_dir: Path):
+        self.root_dir = root_dir.resolve()
+        self.root_dir.mkdir(parents=True, exist_ok=True)
+
+    def _safe_rel_key(self, object_key: str) -> str:
+        raw = (object_key or "").strip().replace("\\", "/")
+        raw = raw.lstrip("/")
+        safe_parts: list[str] = []
+        for part in raw.split("/"):
+            if not part or part in {".", ".."}:
+                continue
+            safe = re.sub(r"[^A-Za-z0-9._-]", "_", part)
+            if safe:
+                safe_parts.append(safe)
+        if not safe_parts:
+            safe_parts = ["unknown"]
+        return "/".join(safe_parts)
+
+    def _object_path(self, object_key: str) -> Path:
+        rel_key = self._safe_rel_key(object_key)
+        target = (self.root_dir / rel_key).resolve()
+        if self.root_dir not in target.parents and target != self.root_dir:
+            raise ValueError("Invalid object_key path")
+        return target
+
+    def _meta_path(self, object_key: str) -> Path:
+        target = self._object_path(object_key)
+        return Path(str(target) + ".meta.json")
+
+    async def upload_file(
+        self,
+        object_key: str,
+        data: bytes | str,
+        mime: str = "application/octet-stream",
+        overwrite: bool = True,
+        content_disposition: str | None = None,
+    ) -> Dict[str, Any]:
+        target = self._object_path(object_key)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.exists() and not overwrite:
+            raise FileExistsError(f"File already exists for key: {object_key}")
+        payload = data.encode("utf-8") if isinstance(data, str) else data
+        target.write_bytes(payload)
+        meta = {
+            "mime": mime or "application/octet-stream",
+            "content_disposition": content_disposition or "",
+        }
+        self._meta_path(object_key).write_text(json.dumps(meta), encoding="utf-8")
+        url = await self.get_read_url(object_key)
+        return {"object_key": object_key, "url": url}
+
+    async def delete_file(self, object_key: str) -> bool:
+        deleted = False
+        target = self._object_path(object_key)
+        meta = self._meta_path(object_key)
+        if target.exists():
+            target.unlink()
+            deleted = True
+        if meta.exists():
+            meta.unlink()
+            deleted = True
+        return deleted
+
+    async def get_read_url(self, object_key: str) -> str:
+        encoded_key = _encode_blob_key(object_key)
+        # Keep URL relative to avoid cross-origin/cookie issues between localhost and 127.0.0.1.
+        return f"/project/local-blob/{encoded_key}"
+
+    async def close(self) -> None:
+        return
+
+
+_storage_client = LocalFileStorageClient(Path(".files") / "blob_storage")
 
 
 def get_chainlit_database_url() -> str:
@@ -107,6 +201,14 @@ def get_auth_login_url() -> str:
         return configured
     host, port = get_django_host_port()
     return f"http://{host}:{port}/api/accounts/chainlit-login/"
+
+
+def get_django_favorites_url() -> str:
+    configured = os.getenv("DJANGO_FAVORITES_URL")
+    if configured:
+        return configured
+    host, port = get_django_host_port()
+    return f"http://{host}:{port}/api/accounts/favorites/"
 
 
 def get_django_host_port() -> tuple[str, int]:
@@ -254,7 +356,199 @@ def start_mcp_server() -> None:
 
 @cl.data_layer
 def get_data_layer():
-    return SQLAlchemyDataLayer(conninfo=get_chainlit_database_url(), show_logger=False)
+    return SQLAlchemyDataLayer(
+        conninfo=get_chainlit_database_url(),
+        storage_provider=_storage_client,
+        show_logger=False,
+    )
+
+
+@chainlit_app.put("/project/thread/favorite")
+async def favorite_thread(payload: dict, current_user: UserParam):
+    data_layer = get_chainlit_server_data_layer()
+    if not data_layer:
+        raise HTTPException(status_code=400, detail="Data persistence is not enabled")
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    thread_id = str(payload.get("threadId", "")).strip()
+    if not thread_id:
+        raise HTTPException(status_code=400, detail="threadId is required")
+
+    is_favorite = bool(payload.get("isFavorite"))
+
+    await is_thread_author(current_user.identifier, thread_id)
+
+    favorites_url = get_django_favorites_url()
+    internal_token = os.getenv("CHAINLIT_INTERNAL_API_TOKEN", "").strip()
+    headers: dict[str, str] = {}
+    if internal_token:
+        headers["X-Internal-Token"] = internal_token
+
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            res = await client.put(
+                favorites_url,
+                json={
+                    "user_id": str(current_user.identifier),
+                    "thread_id": thread_id,
+                    "is_favorite": is_favorite,
+                },
+                headers=headers,
+            )
+        if res.status_code != 200:
+            raise HTTPException(status_code=502, detail="Failed to persist favorite state")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=502, detail="Favorites service unavailable")
+
+    thread = await data_layer.get_thread(thread_id=thread_id)
+    if not thread:
+        raise HTTPException(status_code=404, detail="Thread not found")
+
+    metadata = thread.get("metadata") or {}
+    if isinstance(metadata, str):
+        try:
+            import json
+
+            metadata = json.loads(metadata)
+        except Exception:
+            metadata = {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+
+    metadata = dict(metadata)
+    metadata["is_favorite"] = is_favorite
+    if is_favorite:
+        metadata["favorite_at"] = datetime.now(timezone.utc).isoformat()
+    else:
+        metadata.pop("favorite_at", None)
+
+    await data_layer.update_thread(thread_id=thread_id, metadata=metadata)
+    return JSONResponse(content={"success": True})
+
+
+@chainlit_app.get("/project/favorites")
+async def list_favorites(current_user: UserParam):
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    favorites_url = get_django_favorites_url()
+    internal_token = os.getenv("CHAINLIT_INTERNAL_API_TOKEN", "").strip()
+    headers: dict[str, str] = {}
+    if internal_token:
+        headers["X-Internal-Token"] = internal_token
+
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            res = await client.get(
+                favorites_url,
+                params={"user_id": str(current_user.identifier)},
+                headers=headers,
+            )
+        if res.status_code != 200:
+            raise HTTPException(status_code=502, detail="Failed to fetch favorites")
+        payload = res.json() if res.content else {}
+        thread_ids = payload.get("thread_ids") or []
+        if not isinstance(thread_ids, list):
+            thread_ids = []
+        return JSONResponse(content={"thread_ids": [str(tid) for tid in thread_ids]})
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=502, detail="Favorites service unavailable")
+
+
+@chainlit_app.get("/project/local-blob/{encoded_key}")
+async def read_local_blob(encoded_key: str, current_user: UserParam):
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    try:
+        blob_key = _decode_blob_key(encoded_key)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid blob key")
+
+    key_owner = blob_key.split("/", 1)[0].strip()
+    identifier = str(current_user.identifier)
+    allowed_owners = {identifier}
+
+    data_layer = get_chainlit_server_data_layer()
+    if data_layer:
+        try:
+            persisted_user = await data_layer.get_user(identifier=identifier)
+            if persisted_user and getattr(persisted_user, "id", None):
+                allowed_owners.add(str(persisted_user.id))
+        except Exception:
+            pass
+
+    if key_owner and key_owner not in allowed_owners:
+        authorized_via_thread = False
+        if data_layer:
+            try:
+                rows = await data_layer.execute_sql(
+                    query='SELECT "threadId" FROM "elements" WHERE "objectKey" = :object_key LIMIT 1',
+                    parameters={"object_key": blob_key},
+                )
+                if isinstance(rows, list) and rows:
+                    thread_id = str((rows[0] or {}).get("threadId") or "").strip()
+                    if thread_id:
+                        thread = await data_layer.get_thread(thread_id=thread_id)
+                        if isinstance(thread, dict):
+                            thread_user_identifier = str(thread.get("userIdentifier") or "").strip()
+                            thread_user_id = str(thread.get("userId") or "").strip()
+                            if (
+                                thread_user_identifier == identifier
+                                or thread_user_id in allowed_owners
+                            ):
+                                authorized_via_thread = True
+            except Exception:
+                authorized_via_thread = False
+
+        if not authorized_via_thread:
+            raise HTTPException(status_code=403, detail="Forbidden")
+
+    file_path = _storage_client._object_path(blob_key)
+    if not file_path.exists():
+        # DB fallback: if plotly JSON was persisted in element props, serve it directly.
+        if data_layer:
+            try:
+                rows = await data_layer.execute_sql(
+                    query='SELECT "props", "mime" FROM "elements" WHERE "objectKey" = :object_key LIMIT 1',
+                    parameters={"object_key": blob_key},
+                )
+                if isinstance(rows, list) and rows:
+                    row = rows[0] or {}
+                    raw_props = row.get("props")
+                    props_obj: dict[str, Any] = {}
+                    if isinstance(raw_props, str) and raw_props.strip():
+                        try:
+                            parsed = json.loads(raw_props)
+                            if isinstance(parsed, dict):
+                                props_obj = parsed
+                        except Exception:
+                            props_obj = {}
+                    elif isinstance(raw_props, dict):
+                        props_obj = raw_props
+                    figure_json = props_obj.get("figure_json")
+                    if isinstance(figure_json, dict):
+                        return JSONResponse(content=figure_json)
+            except Exception:
+                pass
+        raise HTTPException(status_code=404, detail="Blob not found")
+
+    mime = "application/octet-stream"
+    meta_path = _storage_client._meta_path(blob_key)
+    if meta_path.exists():
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            parsed_mime = str(meta.get("mime", "")).strip()
+            if parsed_mime:
+                mime = parsed_mime
+        except Exception:
+            pass
+
+    return FileResponse(path=file_path, media_type=mime, filename=file_path.name)
 
 
 def stop_django_backend() -> None:
@@ -328,14 +622,64 @@ def build_user_metadata(user_payload: dict[str, Any], root_payload: dict[str, An
         or _pick_first_non_empty(organization, ["company_size", "companySize", "size"])
         or _pick_first_non_empty(root, ["company_size", "companySize", "size"])
     )
+    first_name = _pick_first_non_empty(user_payload, ["first_name", "firstName"])
+    last_name = _pick_first_non_empty(user_payload, ["last_name", "lastName"])
+    username = _pick_first_non_empty(user_payload, ["username"])
+    email = _pick_first_non_empty(user_payload, ["email"])
+    team_name = _pick_first_non_empty(user_payload, ["team_name", "teamName"])
+    company_name = (
+        _pick_first_non_empty(user_payload, ["company_name", "companyName"])
+        or _pick_first_non_empty(organization, ["company_name", "companyName"])
+    )
+    company_id = (
+        _pick_first_non_empty(user_payload, ["company_id", "companyId"])
+        or _pick_first_non_empty(organization, ["company_id", "companyId"])
+    )
+    year = (
+        _pick_first_non_empty(user_payload, ["year", "jahr"])
+        or _pick_first_non_empty(organization, ["year", "jahr"])
+    )
+    full_name = " ".join(part for part in [first_name, last_name] if part).strip()
+    display_name = full_name or username or email
+    subtitle = " | ".join(part for part in [team_name, company_name] if part).strip()
 
     return {
-        "email": user_payload.get("email"),
-        "username": user_payload.get("username"),
+        "email": email,
+        "username": username,
+        "first_name": first_name,
+        "last_name": last_name,
+        "team_name": team_name,
+        "company_name": company_name,
+        "company_id": company_id,
+        "year": year,
         "industry": industry,
         "company_size": company_size,
+        "display_name": display_name,
+        "subtitle": subtitle,
         "organization": organization,
     }
+
+
+def resolve_user_display_name(
+    user_payload: dict[str, Any], metadata: dict[str, Any], user_id: str
+) -> str:
+    first_name = str(metadata.get("first_name") or "").strip()
+    last_name = str(metadata.get("last_name") or "").strip()
+    full_name = " ".join(part for part in [first_name, last_name] if part).strip()
+    if full_name:
+        return full_name
+
+    for key in ("display_name",):
+        value = str(metadata.get(key) or "").strip()
+        if value:
+            return value
+
+    for key in ("first_name", "last_name"):
+        value = str(user_payload.get(key) or "").strip()
+        if value:
+            return value
+
+    return "User"
 
 
 if is_header_auth_enabled():
@@ -359,10 +703,12 @@ if is_header_auth_enabled():
             user_id = str(user.get("id", "")).strip()
             if not user_id:
                 return None
+            metadata = build_user_metadata(user, payload)
             return cl.User(
                 identifier=user_id,
+                display_name=resolve_user_display_name(user, metadata, user_id),
                 metadata={
-                    **build_user_metadata(user, payload),
+                    **metadata,
                     "auth_source": "django-header",
                 },
             )
@@ -386,6 +732,7 @@ async def password_auth_callback(username: str, password: str) -> cl.User | None
         user_id = str(user.get("id", "")).strip()
         if not user_id:
             return None
+        metadata = build_user_metadata(user, payload)
         survey_data = payload.get("survey_data")
         print(
             f"[Auth] login success user_id={user_id} survey_data_type={type(survey_data).__name__}",
@@ -398,8 +745,9 @@ async def password_auth_callback(username: str, password: str) -> cl.User | None
             print(f"[Auth] survey_data missing or unsupported for {user_id}", flush=True)
         return cl.User(
             identifier=user_id,
+            display_name=resolve_user_display_name(user, metadata, user_id),
             metadata={
-                **build_user_metadata(user, payload),
+                **metadata,
                 "auth_source": "django-password",
             },
         )
@@ -565,6 +913,90 @@ async def ensure_chainlit_history_schema() -> None:
                             f'ADD COLUMN "{column_name}" {column_type}'
                         )
                     )
+
+            # Normalize previously stored absolute local-blob URLs to relative paths.
+            # This avoids auth cookie mismatch when app host is `localhost` but URL stored with `127.0.0.1`.
+            try:
+                rows_result = await conn.execute(
+                    text(
+                        'SELECT "id", "url" FROM "elements" '
+                        'WHERE "url" IS NOT NULL'
+                    )
+                )
+                rows = rows_result.fetchall()
+                for row in rows:
+                    row_id = row[0]
+                    raw_url = str(row[1] or "").strip()
+                    if not raw_url:
+                        continue
+                    lowered = raw_url.lower()
+                    marker = "/project/local-blob/"
+                    if marker not in lowered:
+                        continue
+                    if raw_url.startswith(marker):
+                        continue
+                    idx = lowered.find(marker)
+                    if idx < 0:
+                        continue
+                    normalized_url = raw_url[idx:]
+                    await conn.execute(
+                        text('UPDATE "elements" SET "url" = :url WHERE "id" = :id'),
+                        {"url": normalized_url, "id": row_id},
+                    )
+            except Exception:
+                # URL normalization is best-effort and must not block startup.
+                pass
+
+            # Backfill plotly figure JSON into props when blob file exists.
+            # This gives us a DB fallback if file storage becomes unavailable later.
+            try:
+                plotly_rows_result = await conn.execute(
+                    text(
+                        'SELECT "id", "objectKey", "props" FROM "elements" '
+                        'WHERE "type" = :etype AND "objectKey" IS NOT NULL'
+                    ),
+                    {"etype": "plotly"},
+                )
+                for row in plotly_rows_result.fetchall():
+                    element_id = row[0]
+                    object_key = str(row[1] or "").strip()
+                    raw_props = row[2]
+                    if not object_key:
+                        continue
+
+                    props_obj: dict[str, Any] = {}
+                    if isinstance(raw_props, str) and raw_props.strip():
+                        try:
+                            parsed = json.loads(raw_props)
+                            if isinstance(parsed, dict):
+                                props_obj = parsed
+                        except Exception:
+                            props_obj = {}
+                    elif isinstance(raw_props, dict):
+                        props_obj = raw_props
+
+                    if isinstance(props_obj.get("figure_json"), dict):
+                        continue
+
+                    blob_path = _storage_client._object_path(object_key)
+                    if not blob_path.exists():
+                        continue
+                    try:
+                        figure_json = json.loads(blob_path.read_text(encoding="utf-8"))
+                    except Exception:
+                        continue
+                    if not isinstance(figure_json, dict):
+                        continue
+
+                    props_obj = dict(props_obj)
+                    props_obj["figure_json"] = figure_json
+                    await conn.execute(
+                        text('UPDATE "elements" SET "props" = :props WHERE "id" = :id'),
+                        {"props": json.dumps(props_obj), "id": element_id},
+                    )
+            except Exception:
+                # Backfill is best-effort and must not block startup.
+                pass
     finally:
         await engine.dispose()
 
@@ -674,6 +1106,75 @@ async def send_graph_response(graph: dict[str, Any]) -> None:
     x = graph.get("x") or []
     y = graph.get("y") or []
     title = str(graph.get("title", "Survey Graph"))
+    if kind == "line_multi":
+        series = graph.get("series") or []
+        if not isinstance(series, list) or not series:
+            return
+        traces: list[go.Scatter] = []
+        for idx, item in enumerate(series):
+            if not isinstance(item, dict):
+                continue
+            sx = item.get("x") or []
+            sy = item.get("y") or []
+            if not isinstance(sx, list) or not isinstance(sy, list) or not sx or not sy:
+                continue
+            try:
+                sy_values = [float(v) for v in sy]
+            except (TypeError, ValueError):
+                continue
+            name = str(item.get("name", f"Series {idx + 1}"))
+            traces.append(
+                go.Scatter(
+                    x=[str(v) for v in sx],
+                    y=sy_values,
+                    mode="lines",
+                    name=name,
+                    line=dict(width=3),
+                    hovertemplate="<b>%{x}</b><br>"
+                    + f"{name}: "
+                    + "%{y:.2f}<extra></extra>",
+                )
+            )
+        if not traces:
+            return
+        fig = go.Figure(data=traces)
+        fig.update_layout(
+            title=dict(text=title, x=0.5, xanchor="center"),
+            paper_bgcolor="#0b1020",
+            plot_bgcolor="#0b1020",
+            font=dict(color="#e5e7eb"),
+            xaxis=dict(
+                title=str(graph.get("x_title", "Items")),
+                showgrid=False,
+                zeroline=False,
+                color="#9ca3af",
+            ),
+            yaxis=dict(
+                title=str(graph.get("y_title", "Value")),
+                gridcolor="rgba(255,255,255,0.12)",
+                zeroline=False,
+                color="#9ca3af",
+            ),
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="right",
+                x=1,
+                font=dict(color="#e5e7eb"),
+            ),
+            hoverlabel=dict(bgcolor="#111827", font_color="#f9fafb"),
+            height=520,
+            margin=dict(l=60, r=40, t=90, b=60),
+        )
+        plotly_element = cl.Plotly(name="survey_graph", figure=fig, display="inline")
+        plotly_element.props = {"figure_json": fig.to_plotly_json()}
+        await cl.Message(
+            content="Interactive chart generated. Hover bars to see full labels.",
+            elements=[plotly_element],
+        ).send()
+        return
+
     if kind not in {"bar", "line"} or not isinstance(x, list) or not isinstance(y, list) or not x or not y:
         return
     labels = [str(v) for v in x]
@@ -742,9 +1243,13 @@ async def send_graph_response(graph: dict[str, Any]) -> None:
         height=520,
         margin=dict(l=60, r=40, t=70, b=60),
     )
+    plotly_element = cl.Plotly(name="survey_graph", figure=fig, display="inline")
+    # Persist a DB fallback copy so charts can be reconstructed on thread resume
+    # even if blob file storage is unavailable.
+    plotly_element.props = {"figure_json": fig.to_plotly_json()}
     await cl.Message(
         content="Interactive chart generated. Hover bars to see full labels.",
-        elements=[cl.Plotly(name="survey_graph", figure=fig, display="inline")],
+        elements=[plotly_element],
     ).send()
 
 
@@ -944,10 +1449,7 @@ async def start():
     cl.user_session.set("chat_settings", merged_settings)
     await push_profile_to_ui()
     await cl.Message(
-        content=(
-            "Hello! I'm your Azure OpenAI assistant.\n"
-            "You can chat, upload files, or run `/tool utc_time`."
-        )
+        content="Hello! I'm your Culture Coach Assistant."
     ).send()
 
 

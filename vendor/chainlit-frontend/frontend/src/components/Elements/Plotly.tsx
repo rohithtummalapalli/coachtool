@@ -16,18 +16,59 @@ interface Props {
 const _PlotlyElement = ({ element }: Props) => {
   const { data, error, isLoading } = useFetch(element.url || null);
 
+  const fallbackFromProps = (() => {
+    const raw: any = (element as any)?.props;
+    if (!raw) {
+      return null;
+    }
+    let propsObj: any = raw;
+    if (typeof raw === 'string') {
+      try {
+        propsObj = JSON.parse(raw);
+      } catch {
+        return null;
+      }
+    }
+    if (!propsObj || typeof propsObj !== 'object') {
+      return null;
+    }
+    const figure = propsObj.figure_json;
+    if (figure && typeof figure === 'object') {
+      return figure;
+    }
+    return null;
+  })();
+
   if (isLoading) {
     return <div>Loading...</div>;
-  } else if (error) {
+  } else if (error && !fallbackFromProps) {
     return <div>An error occurred</div>;
   }
 
-  let state;
+  const normalizeFigureState = (input: any): any => {
+    if (!input) return null;
+    if (typeof input === 'string') {
+      const text = input.trim();
+      if (!text) return null;
+      if (text.startsWith('<!doctype') || text.startsWith('<html')) {
+        return null;
+      }
+      try {
+        return normalizeFigureState(JSON.parse(text));
+      } catch {
+        return null;
+      }
+    }
+    if (typeof input !== 'object') return null;
+    if ((input as any).figure_json && typeof (input as any).figure_json === 'object') {
+      return (input as any).figure_json;
+    }
+    return input;
+  };
 
-  if (data) {
-    state = data;
-  } else {
-    return null;
+  const state = normalizeFigureState(data) || normalizeFigureState(fallbackFromProps);
+  if (!state || !Array.isArray((state as any).data)) {
+    return <div>An error occurred</div>;
   }
 
   return (

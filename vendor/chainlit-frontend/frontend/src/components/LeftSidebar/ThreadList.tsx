@@ -1,6 +1,6 @@
 import { cn } from '@/lib/utils';
 import { size } from 'lodash';
-import { Share2 } from 'lucide-react';
+import { Share2, Star } from 'lucide-react';
 import { useContext, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link, useNavigate } from 'react-router-dom';
@@ -93,6 +93,43 @@ export function ThreadList({
   const [isShareDialogOpen, setIsShareDialogOpen] = useState(false);
   // Share dialog state is centralized in ShareDialog; we only track which thread to share
 
+  const toggleFavoriteThread = (threadId: string, isFavorite: boolean) => {
+    toast.promise(apiClient.favoriteThread(threadId, isFavorite), {
+      loading: isFavorite
+        ? 'Adding to favorites...'
+        : 'Removing from favorites...',
+      success: () => {
+        setThreadHistory((prev) => {
+          const next = {
+            ...prev,
+            threads: prev?.threads ? [...prev.threads] : undefined
+          };
+          const threadIndex = next.threads?.findIndex((t) => t.id === threadId);
+          if (typeof threadIndex === 'number' && next.threads) {
+            const thread = next.threads[threadIndex];
+            next.threads[threadIndex] = {
+              ...thread,
+              metadata: {
+                ...(thread.metadata || {}),
+                is_favorite: isFavorite
+              }
+            };
+          }
+          return next;
+        });
+        return isFavorite
+          ? 'Added to favorites'
+          : 'Removed from favorites';
+      },
+      error: (err) => {
+        if (err instanceof ClientError) {
+          return <span>{err.message}</span>;
+        }
+        return <span>Unable to update favorite</span>;
+      }
+    });
+  };
+
   const handleShareThread = (threadId: string) => {
     if (!threadSharingReady) return;
     setThreadIdToShare(threadId);
@@ -118,6 +155,26 @@ export function ThreadList({
     });
   }, [threadHistory?.timeGroupedThreads]);
 
+  const favoriteThreads = useMemo(() => {
+    const all = threadHistory?.threads || [];
+    if (!all.length) return [];
+    return all
+      .filter((thread) => Boolean(thread.metadata?.is_favorite))
+      .sort((a, b) => {
+        const at = new Date(a.createdAt).getTime();
+        const bt = new Date(b.createdAt).getTime();
+        return bt - at;
+      });
+  }, [threadHistory?.threads]);
+
+  const favoriteSet = useMemo(() => {
+    const set = new Set<string>();
+    for (const t of favoriteThreads) {
+      set.add(t.id);
+    }
+    return set;
+  }, [favoriteThreads]);
+
   if (isFetching || (!threadHistory?.timeGroupedThreads && isLoadingMore)) {
     return (
       <div className="flex items-center justify-center p-2">
@@ -134,7 +191,10 @@ export function ThreadList({
     );
   }
 
-  if (!threadHistory || size(threadHistory?.timeGroupedThreads) === 0) {
+  const hasFavorites = favoriteThreads.length > 0;
+  const hasGroupedThreads = size(threadHistory?.timeGroupedThreads) > 0;
+
+  if (!threadHistory || (!hasGroupedThreads && !hasFavorites)) {
     return (
       <Alert variant="info" className="m-3">
         <Translator path="threadHistory.sidebar.empty" />
@@ -312,14 +372,75 @@ export function ThreadList({
         threadId={threadIdToShare || null}
       />
       <TooltipProvider delayDuration={300}>
+        {favoriteThreads.length ? (
+          <SidebarGroup key="favorites">
+            <SidebarGroupLabel>Favorites</SidebarGroupLabel>
+            <SidebarGroupContent>
+              <SidebarMenu>
+                {favoriteThreads.map((thread) => {
+                  const isResumed =
+                    idToResume === thread.id && !threadHistory!.currentThreadId;
+                  const isSelected =
+                    isResumed || threadHistory!.currentThreadId === thread.id;
+                  return (
+                    <SidebarMenuItem key={`favorite-${thread.id}`} id={`thread-fav-${thread.id}`}>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Link to={isResumed ? '' : `/thread/${thread.id}`}>
+                            <SidebarMenuButton isActive={isSelected} className="relative h-9 group/thread">
+                              <span className="flex min-w-0 items-center gap-2">
+                                <Star className="h-4 w-4 shrink-0 text-amber-400 fill-amber-400" />
+                                <span className="truncate">
+                                  {thread.name || <Translator path="threadHistory.thread.untitled" />}
+                                </span>
+                              </span>
+                              <div className={cn('absolute w-10 bottom-0 top-0 right-0 bg-gradient-to-l from-[hsl(var(--sidebar-background))] to-transparent')} />
+                                <ThreadOptions
+                                  onDelete={() => setThreadIdToDelete(thread.id)}
+                                  onRename={() => {
+                                    setThreadIdToRename(thread.id);
+                                    setThreadNewName(thread.name);
+                                  }}
+                                onToggleFavorite={() =>
+                                  toggleFavoriteThread(thread.id, false)
+                                }
+                                isFavorite={favoriteSet.has(thread.id)}
+                                onShare={
+                                  dataPersistence && threadSharingReady
+                                    ? () => handleShareThread(thread.id)
+                                    : undefined
+                                }
+                                className={cn(
+                                  'absolute z-20 bottom-0 top-0 right-0 bg-sidebar-accent hover:bg-sidebar-accent hover:text-primary flex opacity-0 group-hover/thread:opacity-100',
+                                  isSelected && 'bg-sidebar-accent opacity-100'
+                                )}
+                              />
+                            </SidebarMenuButton>
+                          </Link>
+                        </TooltipTrigger>
+                        <TooltipContent side="right" align="center">
+                          <p>{thread.name}</p>
+                        </TooltipContent>
+                      </Tooltip>
+                    </SidebarMenuItem>
+                  );
+                })}
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+        ) : null}
         {sortedTimeGroupKeys.map((group) => {
           const items = threadHistory!.timeGroupedThreads![group];
+          const visibleItems = items.filter((thread) => !favoriteSet.has(thread.id));
+          if (!visibleItems.length) {
+            return null;
+          }
           return (
             <SidebarGroup key={group}>
               <SidebarGroupLabel>{getTimeGroupLabel(group)}</SidebarGroupLabel>
               <SidebarGroupContent>
                 <SidebarMenu>
-                  {items.map((thread) => {
+                  {visibleItems.map((thread) => {
                     const isResumed =
                       idToResume === thread.id &&
                       !threadHistory!.currentThreadId;
@@ -363,6 +484,13 @@ export function ThreadList({
                                     setThreadIdToRename(thread.id);
                                     setThreadNewName(thread.name);
                                   }}
+                                  onToggleFavorite={() =>
+                                    toggleFavoriteThread(
+                                      thread.id,
+                                      !favoriteSet.has(thread.id)
+                                    )
+                                  }
+                                  isFavorite={favoriteSet.has(thread.id)}
                                   onShare={
                                     dataPersistence && threadSharingReady
                                       ? () => handleShareThread(thread.id)

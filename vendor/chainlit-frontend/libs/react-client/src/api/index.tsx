@@ -383,4 +383,20 @@ export class ChainlitAPI extends APIBase {
     });
     return res.json();
   }
+
+  async favoriteThread(
+    threadId: string,
+    isFavorite: boolean
+  ): Promise<{ success: boolean }> {
+    const res = await this.put(`/project/thread/favorite`, {
+      threadId,
+      isFavorite
+    });
+    return res.json();
+  }
+
+  async listFavorites(): Promise<{ thread_ids: string[] }> {
+    const res = await this.get(`/project/favorites`);
+    return res.json();
+  }
 }

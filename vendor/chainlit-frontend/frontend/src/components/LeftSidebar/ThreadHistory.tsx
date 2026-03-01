@@ -12,7 +12,8 @@ import {
 import {
   SidebarContent,
   SidebarGroup,
-  SidebarMenu
+  SidebarMenu,
+  useSidebar
 } from '@/components/ui/sidebar';
 
 import { ThreadList } from './ThreadList';
@@ -20,7 +21,26 @@ import { ThreadList } from './ThreadList';
 const BATCH_SIZE = 35;
 let _scrollTop = 0;
 
+function normalizeThreadMetadata<T extends { metadata?: any }>(thread: T): T {
+  const raw = thread.metadata;
+  if (typeof raw === 'string') {
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') {
+        return { ...thread, metadata: parsed };
+      }
+    } catch {
+      return { ...thread, metadata: {} };
+    }
+  }
+  if (!raw || typeof raw !== 'object') {
+    return { ...thread, metadata: {} };
+  }
+  return thread;
+}
+
 export function ThreadHistory() {
+  const { isMobile, open, openMobile } = useSidebar();
   const navigate = useNavigate();
   const scrollRef = useRef<HTMLDivElement>(null);
   const apiClient = useContext(ChainlitContext);
@@ -31,6 +51,8 @@ export function ThreadHistory() {
   const [isFetching, setIsFetching] = useState(false);
   const [shouldLoadMore, setShouldLoadMore] = useState(false);
   const prevMessageCountRef = useRef(0);
+
+  const sidebarOpen = isMobile ? openMobile : open;
 
   // Restore scroll position
   useEffect(() => {
@@ -107,16 +129,44 @@ export function ThreadHistory() {
       setIsLoadingMore(!!cursor || isLoadingMore);
       setIsFetching(!cursor && !isLoadingMore);
 
-      const { pageInfo, data } = await apiClient.listThreads(
-        { first: BATCH_SIZE, cursor },
-        {}
+      const [{ pageInfo, data }, favoritesResult] = await Promise.all([
+        apiClient.listThreads({ first: BATCH_SIZE, cursor }, {}),
+        apiClient
+          .listFavorites()
+          .then((payload) => ({ ok: true as const, payload }))
+          .catch(() => ({ ok: false as const, payload: null }))
+      ]);
+      const favoritesAvailable =
+        favoritesResult.ok &&
+        Array.isArray(favoritesResult.payload?.thread_ids);
+      const favoriteIds = new Set(
+        favoritesAvailable
+          ? favoritesResult.payload.thread_ids.map((id) => String(id))
+          : []
       );
+      const normalizedData = (data || []).map((thread) => {
+        const normalized = normalizeThreadMetadata(thread);
+        if (!normalized?.id) {
+          return normalized;
+        }
+        if (!favoritesAvailable) {
+          return normalized;
+        }
+        const isFavorite = favoriteIds.has(String(normalized.id));
+        return {
+          ...normalized,
+          metadata: {
+            ...(normalized.metadata || {}),
+            is_favorite: isFavorite
+          }
+        };
+      });
 
       setError(undefined);
 
       // Prevent duplicate threads
       const allThreads = uniqBy(
-        cursor ? threadHistory?.threads?.concat(data) : data,
+        cursor ? threadHistory?.threads?.concat(normalizedData) : normalizedData,
         'id'
       );
 
@@ -153,6 +203,10 @@ export function ThreadHistory() {
       }
     }
   }, [shouldLoadMore, isLoadingMore, threadHistory]);
+
+  if (!sidebarOpen) {
+    return null;
+  }
 
   return (
     <SidebarContent onScroll={handleScroll} ref={scrollRef}>

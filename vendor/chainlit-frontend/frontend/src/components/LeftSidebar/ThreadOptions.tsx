@@ -1,5 +1,5 @@
 import { cn } from '@/lib/utils';
-import { Ellipsis, Share2, Trash2 } from 'lucide-react';
+import { Ellipsis, Share2, Star, Trash2 } from 'lucide-react';
 
 import { Pencil } from '@/components/icons/Pencil';
 import { buttonVariants } from '@/components/ui/button';
@@ -15,6 +15,8 @@ import { Translator } from '../i18n';
 interface Props {
   onDelete: () => void;
   onRename: () => void;
+  onToggleFavorite?: () => void;
+  isFavorite?: boolean;
   onShare?: () => void;
   className?: string;
 }
@@ -22,6 +24,8 @@ interface Props {
 export default function ThreadOptions({
   onDelete,
   onRename,
+  onToggleFavorite,
+  isFavorite,
   onShare,
   className
 }: Props) {
@@ -43,7 +47,19 @@ export default function ThreadOptions({
           <Ellipsis />
         </div>
       </DropdownMenuTrigger>
-      <DropdownMenuContent className="w-20" align="start" forceMount>
+      <DropdownMenuContent className="w-44" align="start" forceMount>
+        {onToggleFavorite ? (
+          <DropdownMenuItem
+            id="favorite-thread"
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleFavorite();
+            }}
+          >
+            {isFavorite ? 'Remove Favorite' : 'Add to Favorites'}
+            <Star className="ml-auto h-4 w-4" />
+          </DropdownMenuItem>
+        ) : null}
         <DropdownMenuItem
           id="rename-thread"
           onClick={(e) => {
