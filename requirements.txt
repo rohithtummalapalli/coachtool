@@ -1,0 +1,10 @@
+chainlit>=2.9.6
+openai>=2.24.0
+django>=5.2.1
+djangorestframework>=3.16.0
+drf-spectacular>=0.28.0
+django-cors-headers>=4.9.0
+dj-database-url>=3.0.1
+python-dotenv>=1.1.1
+sqlalchemy>=2.0.43
+aiosqlite>=0.21.0

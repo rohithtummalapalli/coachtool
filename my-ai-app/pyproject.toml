@@ -1,0 +1,15 @@
+[project]
+name = "my-ai-app"
+version = "0.1.0"
+description = "Production-grade RAG with Chainlit, PostgreSQL pgvector, sentence-transformers, and Azure OpenAI"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "chainlit",
+    "openai",
+    "sentence-transformers",
+    "psycopg2-binary",
+    "pgvector",
+    "python-dotenv",
+    "numpy",
+]

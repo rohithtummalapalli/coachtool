@@ -1,0 +1,184 @@
+#cl-profile-root {
+  position: fixed;
+  left: 12px;
+  bottom: 12px;
+  margin: 0;
+  width: 240px;
+  max-width: calc(100vw - 24px);
+  z-index: 2147483000;
+  font-family: "Segoe UI", "Inter", sans-serif;
+}
+
+.cl-mini-rail {
+  position: fixed;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 56px;
+  background: rgba(16, 16, 18, 0.98);
+  border-right: 1px solid rgba(255, 255, 255, 0.12);
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding-top: 10px;
+  z-index: 2147482500;
+}
+
+.cl-mini-rail.open {
+  display: flex;
+}
+
+.cl-mini-btn {
+  width: 34px;
+  height: 34px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 10px;
+  background: rgba(42, 42, 46, 0.95);
+  color: #f3f4f6;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.cl-mini-btn:hover {
+  background: rgba(64, 64, 72, 0.96);
+}
+
+.cl-mini-divider {
+  width: 30px;
+  height: 1px;
+  margin: 2px 0;
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.cl-profile-in-sidebar {
+  position: sticky !important;
+  left: auto !important;
+  bottom: 12px !important;
+  margin: 0 12px 12px !important;
+  width: calc(100% - 24px) !important;
+  max-width: calc(100% - 24px) !important;
+  z-index: 20 !important;
+}
+
+#cl-profile-root.cl-hidden-when-collapsed {
+  display: none !important;
+}
+
+.cl-profile-button {
+  width: 240px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(38, 38, 38, 0.94);
+  color: #f2f2f2;
+  border-radius: 12px;
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.cl-profile-avatar,
+.cl-flyout-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  background: #4b5563;
+  color: #f9fafb;
+  font-size: 12px;
+  font-weight: 700;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+}
+
+.cl-profile-meta,
+.cl-flyout-meta {
+  min-width: 0;
+}
+
+.cl-profile-name,
+.cl-flyout-name {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cl-profile-handle,
+.cl-flyout-handle {
+  font-size: 12px;
+  color: #b8b8b8;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cl-profile-flyout {
+  position: absolute;
+  left: 0;
+  bottom: 56px;
+  width: 240px;
+  max-height: min(60vh, 420px);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(44, 44, 44, 0.98);
+  color: #f5f5f5;
+  border-radius: 14px;
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.35);
+  overflow-x: hidden;
+  overflow-y: auto;
+  opacity: 0;
+  transform: translateY(8px);
+  pointer-events: none;
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+
+.cl-profile-in-sidebar .cl-profile-button {
+  width: 100%;
+  max-width: 100%;
+}
+
+.cl-profile-in-sidebar .cl-profile-flyout {
+  width: 100%;
+  max-width: 100%;
+}
+
+.cl-profile-flyout.open {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+.cl-flyout-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.cl-flyout-item {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: #f0f0f0;
+  text-align: left;
+  padding: 10px 12px;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.cl-flyout-item:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.cl-flyout-item.danger {
+  color: #fecaca;
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+}

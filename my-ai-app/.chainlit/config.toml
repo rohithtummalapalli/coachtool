@@ -1,0 +1,8 @@
+[project]
+id = "my-ai-app"
+name = "My AI App"
+logo_file_url = ""
+
+[features]
+unsafe_allow_html = false
+
