@@ -14,3 +14,6 @@ wheels/
 !public/build/
 !public/build/**
 
+# Runtime artifacts
+.files/
+

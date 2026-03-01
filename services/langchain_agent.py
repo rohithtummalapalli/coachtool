@@ -439,6 +439,35 @@ def _maybe_answer_from_metadata(
 
     model = os.getenv("ROUTER_MODEL") or os.getenv("LLM_MODEL") or _required_env("AZURE_OPENAI_MODEL")
     history_text = "\n".join([f"{m['role']}: {m['content']}" for m in history_messages[-10:]])
+    route_prompt = (
+        "You are a strict intent classifier.\n"
+        "Return JSON only: {\"metadata_only\": true|false}.\n"
+        "Set metadata_only=true ONLY when user explicitly asks about profile/account attributes such as:\n"
+        "industry, company size, team, company name, company id, or year.\n"
+        "Set metadata_only=false for survey analytics/questions, including scores, lowest/highest, trends, "
+        "comparisons, dimensions, trust index, statistics, charts, stocks, documents, or web questions."
+    )
+    route_user_prompt = (
+        f"Conversation history:\n{history_text}\n\n"
+        f"Question:\n{question}\n\n"
+        "Return JSON."
+    )
+    try:
+        route_resp = _get_router_client().chat.completions.create(
+            model=model,
+            response_format={"type": "json_object"},
+            temperature=0,
+            messages=[
+                {"role": "system", "content": route_prompt},
+                {"role": "user", "content": route_user_prompt},
+            ],
+        )
+        route_payload = json.loads(route_resp.choices[0].message.content or "{}")
+        if not bool(route_payload.get("metadata_only", False)):
+            return None
+    except Exception:
+        return None
+
     system_prompt = (
         "You are a strict metadata router.\n"
         "Return JSON only: {\"use_metadata\": true|false, \"answer\":\"...\"}.\n"
@@ -465,7 +494,29 @@ def _maybe_answer_from_metadata(
         parsed = json.loads(resp.choices[0].message.content or "{}")
         if bool(parsed.get("use_metadata", False)):
             answer = str(parsed.get("answer", "")).strip()
-            return answer or None
+            if not answer:
+                return None
+            if answer.startswith("{") and answer.endswith("}"):
+                try:
+                    obj = json.loads(answer)
+                    if isinstance(obj, dict):
+                        parts = []
+                        for key in [
+                            "industry",
+                            "company_size",
+                            "team_name",
+                            "company_name",
+                            "company_id",
+                            "year",
+                        ]:
+                            value = str(obj.get(key, "")).strip()
+                            if value:
+                                parts.append(f"{key.replace('_', ' ')}: {value}")
+                        if parts:
+                            return "Your profile details: " + ", ".join(parts) + "."
+                except Exception:
+                    pass
+            return answer
     except Exception:
         return None
     return None
@@ -1123,13 +1174,6 @@ def run_agent(
     survey_block_token = _SURVEY_TOOL_BLOCKED.set(explicit_non_survey)
     try:
         if not explicit_non_survey:
-            metadata_answer = _maybe_answer_from_metadata(question, normalized_history, metadata)
-            if metadata_answer:
-                return {
-                    "answer": metadata_answer,
-                    "graph": {},
-                    "trace": {"route": "METADATA", "tools_used": []},
-                }
             # Survey-first behavior. If question hints at non-survey context,
             # ask for confirmation instead of auto-switching to web/RAG/stock.
             if _requires_external_benchmarking(question, normalized_history):
