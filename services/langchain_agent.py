@@ -27,6 +27,20 @@ _CURRENT_WEB_PROFILE: ContextVar[dict[str, str]] = ContextVar("current_web_profi
 _SURVEY_TOOL_BLOCKED: ContextVar[bool] = ContextVar("survey_tool_blocked", default=False)
 
 
+def _history_limit() -> int:
+    raw = os.getenv("CHAINLIT_AGENT_HISTORY_WINDOW", "15").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 15
+    return max(1, min(50, value))
+
+
+def _history_text(history_messages: list[dict[str, str]], limit: int | None = None) -> str:
+    window = _history_limit() if limit is None else max(1, limit)
+    return "\n".join([f"{m['role']}: {m['content']}" for m in history_messages[-window:]])
+
+
 def _resolve_retrieve_documents() -> Callable[[str, int], list[str]]:
     candidates = [
         os.getenv("RAG_RETRIEVE_FUNCTION", "").strip(),
@@ -438,7 +452,7 @@ def _maybe_answer_from_metadata(
         return None
 
     model = os.getenv("ROUTER_MODEL") or os.getenv("LLM_MODEL") or _required_env("AZURE_OPENAI_MODEL")
-    history_text = "\n".join([f"{m['role']}: {m['content']}" for m in history_messages[-10:]])
+    history_text = _history_text(history_messages)
     route_prompt = (
         "You are a strict intent classifier.\n"
         "Return JSON only: {\"metadata_only\": true|false}.\n"
@@ -602,7 +616,7 @@ def _discover_tickers_for_industry(industry: str, count: int) -> list[str]:
 
 def _should_use_survey_tool(question: str, history_messages: list[dict[str, str]]) -> bool:
     model = os.getenv("ROUTER_MODEL") or os.getenv("LLM_MODEL") or _required_env("AZURE_OPENAI_MODEL")
-    history_text = "\n".join([f"{m['role']}: {m['content']}" for m in history_messages[-10:]])
+    history_text = _history_text(history_messages)
     system_prompt = (
         "You are a strict routing classifier for an enterprise assistant.\n"
         "Understand user messages in any language.\n"
@@ -642,7 +656,7 @@ def _is_explicit_non_survey_request(question: str, history_messages: list[dict[s
     - Return True only when user explicitly asks for non-survey domains.
     """
     model = os.getenv("ROUTER_MODEL") or os.getenv("LLM_MODEL") or _required_env("AZURE_OPENAI_MODEL")
-    history_text = "\n".join([f"{m['role']}: {m['content']}" for m in history_messages[-10:]])
+    history_text = _history_text(history_messages)
     system_prompt = (
         "You are a strict router for domain selection.\n"
         "Default to survey domain unless user explicitly requests a different domain.\n"
@@ -678,7 +692,7 @@ def _is_explicit_non_survey_request(question: str, history_messages: list[dict[s
 
 def _requires_external_benchmarking(question: str, history_messages: list[dict[str, str]]) -> bool:
     model = os.getenv("ROUTER_MODEL") or os.getenv("LLM_MODEL") or _required_env("AZURE_OPENAI_MODEL")
-    history_text = "\n".join([f"{m['role']}: {m['content']}" for m in history_messages[-10:]])
+    history_text = _history_text(history_messages)
     system_prompt = (
         "You are a strict classifier.\n"
         "Return JSON only: {\"external_benchmarking_needed\": true|false}.\n"
@@ -710,7 +724,9 @@ def _requires_external_benchmarking(question: str, history_messages: list[dict[s
 def predict_loading_stage(question: str, history_messages: list[dict[str, str]] | None = None) -> str:
     model = os.getenv("ROUTER_MODEL") or os.getenv("LLM_MODEL") or _required_env("AZURE_OPENAI_MODEL")
     history = history_messages or []
-    history_text = "\n".join([f"{m.get('role')}: {m.get('content')}" for m in history[-10:]])
+    history_text = "\n".join(
+        [f"{m.get('role')}: {m.get('content')}" for m in history[-_history_limit():]]
+    )
     system_prompt = (
         "You are a strict planner classifier.\n"
         "Return JSON only: {\"stage\":\"SURVEY\"|\"RAG\"|\"WEB\"|\"STOCK\"|\"DIRECT\"}.\n"
@@ -841,12 +857,11 @@ def _render_survey_answer(
             "unable to interpret this survey question",
             "question is required",
             "user id is required",
-            "no rows match the requested filters",
         ]
     ):
         return tool_output
     model = os.getenv("LLM_MODEL") or _required_env("AZURE_OPENAI_MODEL")
-    history_text = "\n".join([f"{m['role']}: {m['content']}" for m in history_messages[-10:]])
+    history_text = _history_text(history_messages)
     system_prompt = (
         "You are a survey analytics assistant.\n"
         "Use ONLY the provided survey tool result as source of truth.\n"
@@ -888,7 +903,7 @@ def _render_stock_answer(
     if not stock_summary.strip():
         return "I couldn't build a stock summary right now."
     model = os.getenv("LLM_MODEL") or _required_env("AZURE_OPENAI_MODEL")
-    history_text = "\n".join([f"{m['role']}: {m['content']}" for m in history_messages[-10:]])
+    history_text = _history_text(history_messages)
     system_prompt = (
         "You are a financial insights assistant.\n"
         "Use ONLY the provided stock summary.\n"
@@ -923,7 +938,7 @@ def _render_stock_answer(
 
 def _should_generate_graph(question: str, history_messages: list[dict[str, str]], payload: dict[str, Any]) -> bool:
     model = os.getenv("ROUTER_MODEL") or os.getenv("LLM_MODEL") or _required_env("AZURE_OPENAI_MODEL")
-    history_text = "\n".join([f"{m['role']}: {m['content']}" for m in history_messages[-10:]])
+    history_text = _history_text(history_messages)
     payload_preview = {
         "operation": payload.get("operation"),
         "metric": payload.get("metric"),
@@ -967,7 +982,7 @@ def _resolve_graph_merge_mode(
     if not previous_rows:
         return "replace"
     model = os.getenv("ROUTER_MODEL") or os.getenv("LLM_MODEL") or _required_env("AZURE_OPENAI_MODEL")
-    history_text = "\n".join([f"{m['role']}: {m['content']}" for m in history_messages[-10:]])
+    history_text = _history_text(history_messages)
     system_prompt = (
         "You are a strict graph-state controller.\n"
         "Understand any language.\n"
@@ -1033,7 +1048,7 @@ async def _run_survey_pipeline(
     previous_graph_metric: str | None = None,
 ) -> dict[str, Any]:
     history_context = "\n".join(
-        [f"{m['role']}: {m['content']}" for m in history_messages[-8:]]
+        [f"{m['role']}: {m['content']}" for m in history_messages[-_history_limit():]]
     )
     contextual_question = (
         "Use this conversation context to resolve references like "
@@ -1126,6 +1141,46 @@ async def _run_stock_pipeline(
     }
 
 
+def _should_use_survey_payload_tool(question: str, history_messages: list[dict[str, str]]) -> bool:
+    """
+    Decide whether we should run strict survey-data retrieval pipeline
+    (filters/ranking/comparison/stat extraction) or let the agent decide
+    tool usage for advisory/follow-up requests.
+    """
+    model = os.getenv("ROUTER_MODEL") or os.getenv("LLM_MODEL") or _required_env("AZURE_OPENAI_MODEL")
+    history_text = _history_text(history_messages)
+    system_prompt = (
+        "You are a strict router.\n"
+        "Return JSON only: {\"use_survey_payload\": true|false}.\n"
+        "use_survey_payload=true when user asks to fetch/compute survey values, "
+        "rankings, lowest/highest items, trust index values, comparisons, "
+        "or any new numeric/statistical extraction from survey data.\n"
+        "use_survey_payload=false for advisory or interpretive follow-ups such as "
+        "how to improve, recommendations, action plans, explanations, communication guidance, "
+        "or questions that can be answered from existing context without new row filtering."
+    )
+    user_prompt = (
+        f"Conversation history:\n{history_text}\n\n"
+        f"Current question:\n{question}\n\n"
+        "Return JSON."
+    )
+    try:
+        resp = _get_router_client().chat.completions.create(
+            model=model,
+            response_format={"type": "json_object"},
+            temperature=0,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        )
+        parsed = json.loads(resp.choices[0].message.content or "{}")
+        return bool(parsed.get("use_survey_payload", False))
+    except Exception:
+        # Keep survey-first behavior if classifier fails.
+        return True
+
+
 def run_agent(
     user_id: str,
     question: str,
@@ -1174,6 +1229,14 @@ def run_agent(
     survey_block_token = _SURVEY_TOOL_BLOCKED.set(explicit_non_survey)
     try:
         if not explicit_non_survey:
+            should_use_payload = _should_use_survey_payload_tool(question, normalized_history)
+            if not should_use_payload:
+                agent_result = _invoke_general_agent(question, normalized_history)
+                trace = agent_result.get("trace") if isinstance(agent_result, dict) else None
+                if isinstance(trace, dict):
+                    trace["route"] = "AGENT_TOOL_ROUTING"
+                return agent_result
+
             # Survey-first behavior. If question hints at non-survey context,
             # ask for confirmation instead of auto-switching to web/RAG/stock.
             if _requires_external_benchmarking(question, normalized_history):
@@ -1197,6 +1260,13 @@ def run_agent(
             survey_trace_tools = ["query_survey_data"]
             if (survey_result or {}).get("graph"):
                 survey_trace_tools.append("create_survey_graph")
+            survey_answer = str((survey_result or {}).get("answer") or "").strip().lower()
+            if "no rows match the requested filters" in survey_answer:
+                fallback = _invoke_general_agent(question, normalized_history)
+                trace = fallback.get("trace") if isinstance(fallback, dict) else None
+                if isinstance(trace, dict):
+                    trace["route"] = "SURVEY_TO_AGENT_FALLBACK"
+                return fallback
             survey_result["trace"] = {
                 "route": "SURVEY_PIPELINE",
                 "tools_used": survey_trace_tools,

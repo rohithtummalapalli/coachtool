@@ -160,11 +160,11 @@ def get_default_settings() -> dict[str, Any]:
 
 
 def get_agent_history_window() -> int:
-    raw = os.getenv("CHAINLIT_AGENT_HISTORY_WINDOW", "10").strip()
+    raw = os.getenv("CHAINLIT_AGENT_HISTORY_WINDOW", "15").strip()
     try:
         value = int(raw)
     except ValueError:
-        value = 10
+        value = 15
     return max(1, min(50, value))
 
 
