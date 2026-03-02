@@ -119,6 +119,42 @@ async def call_graph_tool(question: str, metric: str, rows: list[dict[str, Any]]
         return {}
 
 
+async def call_stock_payload_tool(
+    question: str,
+    industry: str = "",
+    company_size: str = "",
+) -> dict[str, Any]:
+    if not question.strip():
+        return {"error": "Stock query is empty."}
+
+    timeout_seconds = float(os.getenv("MCP_CLIENT_TIMEOUT_SECONDS", "15"))
+    try:
+        async with streamablehttp_client(
+            _mcp_url(),
+            timeout=timeout_seconds,
+        ) as (read_stream, write_stream, _):
+            async with ClientSession(read_stream, write_stream) as session:
+                await session.initialize()
+                result = await session.call_tool(
+                    "query_stock_data_payload",
+                    {
+                        "question": question,
+                        "industry": industry,
+                        "company_size": company_size,
+                    },
+                )
+        structured = _extract_tool_structured(result)
+        if isinstance(structured, dict):
+            return structured
+        text_fallback = _extract_tool_text(result)
+        if text_fallback:
+            return {"error": text_fallback}
+        return {"error": "No stock payload returned."}
+    except Exception as exc:
+        logger.exception("MCP stock payload call failed: %s", exc)
+        return {"error": "Stock data tools are currently unavailable. Please try again shortly."}
+
+
 async def hydrate_survey_data(user_id: str, survey_rows: Any) -> bool:
     if not user_id.strip():
         return False

@@ -615,6 +615,347 @@ def _build_graph_spec(question: str, rows: list[dict[str, Any]], metric: str) ->
     }
 
 
+def _extract_stock_plan(question: str) -> dict[str, Any]:
+    system_prompt = (
+        "Extract stock query parameters.\n"
+        "Return strict JSON: {\"tickers\":[\"...\"],\"companies\":[\"...\"],\"period\":\"...\"}.\n"
+        "tickers should be Yahoo Finance symbols when user explicitly provides or implies them.\n"
+        "companies should contain company names when user asks by company name.\n"
+        "If user asks multiple companies/tickers, include all relevant entities.\n"
+        "period must be one of: 5d,1mo,3mo,6mo,1y,2y,5y,max.\n"
+        "If unclear, choose sensible defaults."
+    )
+    try:
+        client = _get_azure_client()
+        model = os.getenv("MCP_PLANNER_MODEL") or os.getenv("LLM_MODEL") or _required_env("AZURE_OPENAI_MODEL")
+        response = client.chat.completions.create(
+            model=model,
+            response_format={"type": "json_object"},
+            temperature=0,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": question},
+            ],
+        )
+        parsed = json.loads(response.choices[0].message.content or "{}")
+        tickers_raw = parsed.get("tickers") or []
+        tickers: list[str] = []
+        if isinstance(tickers_raw, list):
+            for token in tickers_raw:
+                symbol = str(token).strip().upper()
+                if symbol and symbol not in tickers:
+                    tickers.append(symbol)
+        elif isinstance(tickers_raw, str):
+            symbol = tickers_raw.strip().upper()
+            if symbol:
+                tickers.append(symbol)
+        period = str(parsed.get("period", "6mo")).strip()
+        if period not in {"5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "max"}:
+            period = "6mo"
+        companies_raw = parsed.get("companies") or []
+        companies: list[str] = []
+        if isinstance(companies_raw, list):
+            for name in companies_raw:
+                company = str(name).strip()
+                if company and company not in companies:
+                    companies.append(company)
+        elif isinstance(companies_raw, str):
+            company = companies_raw.strip()
+            if company:
+                companies.append(company)
+
+        return {"tickers": tickers[:5], "companies": companies[:5], "period": period}
+    except Exception:
+        return {"tickers": [], "companies": [], "period": "6mo"}
+
+
+def _fallback_extract_tickers(question: str) -> list[str]:
+    candidates = re.findall(r"\b[A-Z][A-Z0-9.\-]{0,9}\b", question)
+    blocked = {"I", "A", "AN", "THE", "AND", "OR", "TO", "FOR", "WITH", "IN", "ON"}
+    tickers: list[str] = []
+    for token in candidates:
+        if token in blocked:
+            continue
+        if token not in tickers:
+            tickers.append(token)
+    return tickers
+
+
+def _resolve_tickers_from_company_names(company_names: list[str], max_count: int = 5) -> list[str]:
+    if not company_names:
+        return []
+    try:
+        import yfinance as yf
+    except Exception:
+        return []
+
+    resolved: list[str] = []
+    for company in company_names[:10]:
+        query = str(company).strip()
+        if not query:
+            continue
+        try:
+            search = yf.Search(query, max_results=8, news_count=0, lists_count=0, include_research=False)
+            quotes = getattr(search, "quotes", []) or []
+        except Exception:
+            quotes = []
+
+        best_symbol = ""
+        for item in quotes:
+            if not isinstance(item, dict):
+                continue
+            quote_type = str(item.get("quoteType") or item.get("typeDisp") or "").lower()
+            symbol = str(item.get("symbol") or "").strip().upper()
+            if not symbol:
+                continue
+            if quote_type and quote_type not in {"equity", "etf"}:
+                continue
+            best_symbol = symbol
+            break
+        if best_symbol and best_symbol not in resolved:
+            resolved.append(best_symbol)
+        if len(resolved) >= max_count:
+            break
+    return resolved[:max_count]
+
+
+def _extract_requested_company_count(question: str) -> int:
+    system_prompt = (
+        "Extract requested number of companies for stock comparison.\n"
+        "Return JSON only: {\"count\": number}.\n"
+        "If not specified, return 2. Clamp to 1..5."
+    )
+    try:
+        client = _get_azure_client()
+        model = os.getenv("MCP_PLANNER_MODEL") or os.getenv("LLM_MODEL") or _required_env("AZURE_OPENAI_MODEL")
+        response = client.chat.completions.create(
+            model=model,
+            response_format={"type": "json_object"},
+            temperature=0,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": question},
+            ],
+        )
+        parsed = json.loads(response.choices[0].message.content or "{}")
+        count = int(parsed.get("count", 2))
+        return max(1, min(5, count))
+    except Exception:
+        return 2
+
+
+def _discover_tickers_for_industry(industry: str, count: int) -> list[str]:
+    api_key = os.getenv("TAVILY_API_KEY", "").strip()
+    if not api_key or not industry.strip():
+        return []
+    try:
+        from tavily import TavilyClient
+
+        client = TavilyClient(api_key=api_key)
+        result = client.search(
+            query=(
+                f"Top publicly traded companies in {industry} industry "
+                "with stock ticker symbols by market cap"
+            ),
+            max_results=8,
+        )
+        snippets = []
+        for item in result.get("results") or []:
+            title = str(item.get("title", "")).strip()
+            content = str(item.get("content", "")).strip()
+            if title or content:
+                snippets.append(f"Title: {title}\nContent: {content}")
+        if not snippets:
+            return []
+
+        extract_prompt = (
+            "Extract ticker symbols from snippets. "
+            f"Return JSON only: {{\"tickers\":[...]}} with max {count} symbols."
+        )
+        azure = _get_azure_client()
+        model = os.getenv("MCP_PLANNER_MODEL") or os.getenv("LLM_MODEL") or _required_env("AZURE_OPENAI_MODEL")
+        resp = azure.chat.completions.create(
+            model=model,
+            response_format={"type": "json_object"},
+            temperature=0,
+            messages=[
+                {"role": "system", "content": extract_prompt},
+                {"role": "user", "content": "\n\n".join(snippets[:12])},
+            ],
+        )
+        parsed = json.loads(resp.choices[0].message.content or "{}")
+        raw = parsed.get("tickers") or []
+        if not isinstance(raw, list):
+            return []
+        out: list[str] = []
+        for token in raw:
+            symbol = str(token).strip().upper()
+            if symbol and symbol not in out:
+                out.append(symbol)
+        return out[:count]
+    except Exception:
+        return []
+
+
+def _fetch_single_ticker_payload(ticker: str, period: str) -> dict[str, Any]:
+    try:
+        import yfinance as yf
+        history = yf.Ticker(ticker).history(period=period)
+    except Exception:
+        return {"error": f"Unable to fetch stock data for {ticker} right now."}
+
+    if history is None or history.empty or "Close" not in history.columns:
+        return {"error": f"No stock data found for {ticker}."}
+
+    closes = history["Close"].dropna()
+    if closes.empty:
+        return {"error": f"No closing price data found for {ticker}."}
+
+    start_price = float(closes.iloc[0])
+    end_price = float(closes.iloc[-1])
+    delta = end_price - start_price
+    pct = (delta / start_price * 100) if start_price else 0.0
+    high = float(closes.max())
+    low = float(closes.min())
+
+    x_values = [idx.strftime("%Y-%m-%d") for idx in closes.index.to_pydatetime()]
+    y_values = [float(v) for v in closes.tolist()]
+    return {
+        "ticker": ticker,
+        "period": period,
+        "x": x_values,
+        "y": y_values,
+        "start": start_price,
+        "end": end_price,
+        "delta": delta,
+        "pct": pct,
+        "high": high,
+        "low": low,
+    }
+
+
+def _fetch_stock_payload(question: str, industry: str = "") -> dict[str, Any]:
+    if not question.strip():
+        return {"error": "Stock query is empty."}
+    try:
+        import yfinance  # noqa: F401
+    except Exception:
+        return {"error": "Stock data service is not available right now."}
+
+    plan = _extract_stock_plan(question)
+    tickers = plan.get("tickers") or []
+    if not isinstance(tickers, list):
+        tickers = []
+    tickers = [str(t).strip().upper() for t in tickers if str(t).strip()]
+    company_names = plan.get("companies") or []
+    if not isinstance(company_names, list):
+        company_names = []
+    company_names = [str(name).strip() for name in company_names if str(name).strip()]
+
+    explicit_tickers = _fallback_extract_tickers(question)
+    if explicit_tickers:
+        tickers = [t for t in tickers if t in explicit_tickers] or explicit_tickers
+    else:
+        requested_count = _extract_requested_company_count(question)
+        if company_names:
+            resolved = _resolve_tickers_from_company_names(company_names, max_count=requested_count)
+            if resolved:
+                tickers = resolved
+        if not tickers:
+            discovered = _discover_tickers_for_industry(industry=industry, count=requested_count)
+            if discovered:
+                tickers = discovered
+
+    tickers = list(dict.fromkeys(tickers))[:5]
+    period = str(plan.get("period") or "6mo")
+    if not tickers:
+        return {"error": "I could not identify the stock ticker(s). Please include symbols like AAPL or MSFT."}
+
+    series_payloads: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for ticker in tickers:
+        item = _fetch_single_ticker_payload(ticker, period)
+        if item.get("error"):
+            errors.append(str(item["error"]))
+            continue
+        series_payloads.append(item)
+
+    if not series_payloads:
+        return {"error": errors[0] if errors else "Unable to fetch stock data right now."}
+
+    if len(series_payloads) == 1:
+        item = series_payloads[0]
+        ticker = str(item["ticker"])
+        end_price = float(item["end"])
+        delta = float(item["delta"])
+        pct = float(item["pct"])
+        high = float(item["high"])
+        low = float(item["low"])
+        x_values = item["x"]
+        y_values = item["y"]
+        return {
+            "summary": (
+                f"{ticker} over {period}: latest close {end_price:.2f}, "
+                f"change {delta:+.2f} ({pct:+.2f}%), high {high:.2f}, low {low:.2f}."
+            ),
+            "graph": {
+                "kind": "line",
+                "x": x_values,
+                "y": y_values,
+                "title": f"{ticker} Closing Price ({period})",
+                "x_title": "Date",
+                "y_title": "Close Price ($)",
+            },
+            "table_rows": [
+                {"ticker": ticker, "date": date_val, "close": float(close_val)}
+                for date_val, close_val in zip(x_values, y_values)
+            ],
+            "tickers": [ticker],
+            "period": period,
+            "source": "yfinance",
+        }
+
+    ranked = sorted(series_payloads, key=lambda s: float(s["pct"]), reverse=True)
+    summary_parts = []
+    for item in ranked:
+        summary_parts.append(
+            (
+                f"{item['ticker']}: latest {float(item['end']):.2f}, "
+                f"change {float(item['delta']):+.2f} ({float(item['pct']):+.2f}%), "
+                f"high {float(item['high']):.2f}, low {float(item['low']):.2f}"
+            )
+        )
+    summary = f"Stock comparison over {period}:\n- " + "\n- ".join(summary_parts)
+    if errors:
+        summary += "\n\nUnavailable tickers: " + ", ".join(errors)
+
+    return {
+        "summary": summary,
+        "graph": {
+            "kind": "line_multi",
+            "series": [
+                {"name": str(item["ticker"]), "x": item["x"], "y": item["y"]}
+                for item in series_payloads
+            ],
+            "title": f"Stock Price Comparison ({period})",
+            "x_title": "Date",
+            "y_title": "Close Price ($)",
+        },
+        "table_rows": [
+            {
+                "ticker": str(item["ticker"]),
+                "latest_close": float(item["end"]),
+                "change": float(item["delta"]),
+                "change_pct": float(item["pct"]),
+            }
+            for item in ranked
+        ],
+        "tickers": [str(item["ticker"]) for item in series_payloads],
+        "period": period,
+        "source": "yfinance",
+    }
+
+
 mcp = FastMCP(
     "survey-data-server",
     host=os.getenv("MCP_HOST", "127.0.0.1"),
@@ -657,6 +998,25 @@ def create_survey_graph(question: str, metric: str, rows: list[dict[str, Any]]) 
         return {"summary": "No rows available for graph.", "graph": {}}
     graph = _build_graph_spec(question=question, rows=rows, metric=metric or "topbox")
     return {"summary": "Graph generated.", "graph": graph}
+
+
+@mcp.tool(name="query_stock_data_payload")
+def query_stock_data_payload(question: str, industry: str = "", company_size: str = "") -> dict[str, Any]:
+    logger.info(
+        "Tool call: query_stock_data_payload industry=%s company_size=%s",
+        industry,
+        company_size,
+    )
+    _ = company_size  # Reserved for future expansion.
+    return _fetch_stock_payload(question=question, industry=industry)
+
+
+@mcp.tool(name="query_stock_data")
+def query_stock_data(question: str, industry: str = "", company_size: str = "") -> str:
+    payload = query_stock_data_payload(question=question, industry=industry, company_size=company_size)
+    if payload.get("error"):
+        return str(payload.get("error"))
+    return json.dumps(payload)
 
 
 @mcp.tool(name="hydrate_survey_data")

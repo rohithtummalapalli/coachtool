@@ -17,6 +17,7 @@ from openai import AzureOpenAI
 
 from services.mcp_client import (
     call_graph_tool,
+    call_stock_payload_tool,
     call_survey_payload_tool,
     call_survey_tool,
     refresh_and_hydrate_survey_data,
@@ -380,7 +381,16 @@ def _fetch_stock_payload(question: str, user_profile: dict[str, str] | None = No
 @tool("stock_market_data")
 def stock_market_data_tool(question: str) -> str:
     """Use this tool for stock price, trend, ticker performance, and stock chart requests."""
-    payload = _fetch_stock_payload(question)
+    profile = _CURRENT_WEB_PROFILE.get() or {}
+    industry = str(profile.get("industry", "")).strip()
+    company_size = str(profile.get("company_size", "")).strip()
+    payload = asyncio.run(
+        call_stock_payload_tool(
+            question=question,
+            industry=industry,
+            company_size=company_size,
+        )
+    )
     if payload.get("error"):
         return str(payload["error"])
     return json.dumps(payload)
@@ -1128,17 +1138,57 @@ async def _run_stock_pipeline(
     history_messages: list[dict[str, str]],
     user_profile: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    payload = await asyncio.to_thread(_fetch_stock_payload, question, user_profile)
+    industry = str((user_profile or {}).get("industry") or "").strip()
+    company_size = str((user_profile or {}).get("company_size") or "").strip()
+    payload = await call_stock_payload_tool(
+        question=question,
+        industry=industry,
+        company_size=company_size,
+    )
     error = str(payload.get("error", "")).strip()
     if error:
         return {"answer": error, "graph": {}}
     summary = str(payload.get("summary", "")).strip()
-    answer = await asyncio.to_thread(_render_stock_answer, question, summary, history_messages)
+    include_history = _stock_followup_needs_history(question, history_messages)
+    render_history = history_messages if include_history else []
+    answer = await asyncio.to_thread(_render_stock_answer, question, summary, render_history)
     graph = payload.get("graph")
     return {
         "answer": answer,
         "graph": graph if isinstance(graph, dict) else {},
     }
+
+
+def _stock_followup_needs_history(question: str, history_messages: list[dict[str, str]]) -> bool:
+    model = os.getenv("ROUTER_MODEL") or os.getenv("LLM_MODEL") or _required_env("AZURE_OPENAI_MODEL")
+    history_text = _history_text(history_messages)
+    system_prompt = (
+        "You are a strict classifier for stock question context usage.\n"
+        "Return JSON only: {\"needs_history\": true|false}.\n"
+        "Set needs_history=true when question is a follow-up that refers to previous stock results, "
+        "such as compare with previous/earlier/that/these, add another company to existing comparison, "
+        "or any pronoun-based continuation.\n"
+        "Set needs_history=false for standalone stock requests where current question is self-contained."
+    )
+    user_prompt = (
+        f"Conversation history:\n{history_text}\n\n"
+        f"Current question:\n{question}\n\n"
+        "Return JSON."
+    )
+    try:
+        resp = _get_router_client().chat.completions.create(
+            model=model,
+            response_format={"type": "json_object"},
+            temperature=0,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        )
+        parsed = json.loads(resp.choices[0].message.content or "{}")
+        return bool(parsed.get("needs_history", False))
+    except Exception:
+        return False
 
 
 def _should_use_survey_payload_tool(question: str, history_messages: list[dict[str, str]]) -> bool:
