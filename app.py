@@ -1260,6 +1260,7 @@ def _tool_label(tool_name: str) -> str:
         "web_search": "Web Search",
         "stock_market_data": "Stock Market Data",
         "create_survey_graph": "Chart Generator",
+        "create_bestpractices": "Best Practices",
     }
     return mapping.get(tool_name, tool_name)
 

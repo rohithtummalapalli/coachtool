@@ -155,6 +155,36 @@ async def call_stock_payload_tool(
         return {"error": "Stock data tools are currently unavailable. Please try again shortly."}
 
 
+async def call_bestpractices_tool(chat_messages: list[dict[str, str]]) -> dict[str, str]:
+    if not isinstance(chat_messages, list) or not chat_messages:
+        return {"question": "", "answer": "No chat context is available for best practices."}
+
+    timeout_seconds = float(os.getenv("MCP_CLIENT_TIMEOUT_SECONDS", "15"))
+    try:
+        async with streamablehttp_client(
+            _mcp_url(),
+            timeout=timeout_seconds,
+        ) as (read_stream, write_stream, _):
+            async with ClientSession(read_stream, write_stream) as session:
+                await session.initialize()
+                result = await session.call_tool(
+                    "create_bestpractices",
+                    {"chat_messages": chat_messages},
+                )
+        structured = _extract_tool_structured(result)
+        if isinstance(structured, dict):
+            question = str(structured.get("question", "")).strip()
+            answer = str(structured.get("answer", "")).strip()
+            return {"question": question, "answer": answer or "Best-practices tool returned an empty response."}
+        text_fallback = _extract_tool_text(result)
+        if text_fallback:
+            return {"question": "", "answer": text_fallback}
+        return {"question": "", "answer": "Best-practices tool returned an empty response."}
+    except Exception as exc:
+        logger.exception("MCP best-practices call failed: %s", exc)
+        return {"question": "", "answer": "Best-practices tool is currently unavailable. Please try again shortly."}
+
+
 async def hydrate_survey_data(user_id: str, survey_rows: Any) -> bool:
     if not user_id.strip():
         return False

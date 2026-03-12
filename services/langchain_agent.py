@@ -16,6 +16,7 @@ from langchain_openai import AzureChatOpenAI
 from openai import AzureOpenAI
 
 from services.mcp_client import (
+    call_bestpractices_tool,
     call_graph_tool,
     call_stock_payload_tool,
     call_survey_payload_tool,
@@ -1159,6 +1160,25 @@ async def _run_stock_pipeline(
     }
 
 
+async def _run_bestpractices_pipeline(
+    question: str,
+    history_messages: list[dict[str, str]],
+) -> dict[str, Any]:
+    normalized: list[dict[str, str]] = []
+    for msg in history_messages:
+        role = str(msg.get("role", "")).strip().lower()
+        content = str(msg.get("content", "")).strip()
+        if role in {"user", "assistant"} and content:
+            normalized.append({"role": role, "content": content})
+    normalized.append({"role": "user", "content": question.strip()})
+    last_five = normalized[-5:]
+    payload = await call_bestpractices_tool(chat_messages=last_five)
+    answer = str(payload.get("answer", "")).strip()
+    if not answer:
+        answer = "I couldn't generate best-practice guidance right now. Please try again."
+    return {"answer": answer, "graph": {}}
+
+
 def _stock_followup_needs_history(question: str, history_messages: list[dict[str, str]]) -> bool:
     model = os.getenv("ROUTER_MODEL") or os.getenv("LLM_MODEL") or _required_env("AZURE_OPENAI_MODEL")
     history_text = _history_text(history_messages)
@@ -1187,6 +1207,44 @@ def _stock_followup_needs_history(question: str, history_messages: list[dict[str
         )
         parsed = json.loads(resp.choices[0].message.content or "{}")
         return bool(parsed.get("needs_history", False))
+    except Exception:
+        return False
+
+
+def _should_use_bestpractices_tool(question: str, history_messages: list[dict[str, str]]) -> bool:
+    q = question.strip().lower()
+    if not q:
+        return False
+    model = os.getenv("ROUTER_MODEL") or os.getenv("LLM_MODEL") or _required_env("AZURE_OPENAI_MODEL")
+    history_text = _history_text(history_messages)
+    system_prompt = (
+        "You are a strict router.\n"
+        "Understand user input in any language.\n"
+        "Return JSON only: {\"route\":\"BEST_PRACTICES\"|\"OTHER\"}.\n"
+        "Choose BEST_PRACTICES only when the current request is a follow-up seeking "
+        "improvement guidance, recommendations, action plans, or best-practice advice "
+        "based on previously identified survey findings/results in conversation history.\n"
+        "Choose OTHER for new data extraction, ranking/computation, unrelated domains, "
+        "or requests that should be handled by survey/web/rag/stock routing."
+    )
+    user_prompt = (
+        f"Conversation history:\n{history_text}\n\n"
+        f"Current question:\n{question}\n\n"
+        "Return JSON."
+    )
+    try:
+        resp = _get_router_client().chat.completions.create(
+            model=model,
+            response_format={"type": "json_object"},
+            temperature=0,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        )
+        parsed = json.loads(resp.choices[0].message.content or "{}")
+        route = str(parsed.get("route", "")).strip().upper()
+        return route == "BEST_PRACTICES"
     except Exception:
         return False
 
@@ -1278,7 +1336,21 @@ def run_agent(
     explicit_non_survey = _is_explicit_non_survey_request(question, normalized_history)
     survey_block_token = _SURVEY_TOOL_BLOCKED.set(explicit_non_survey)
     try:
+        if _should_use_bestpractices_tool(question, normalized_history):
+            bestpractices_result = asyncio.run(
+                _run_bestpractices_pipeline(
+                    question=question,
+                    history_messages=normalized_history,
+                )
+            )
+            bestpractices_result["trace"] = {
+                "route": "BEST_PRACTICES_PIPELINE",
+                "tools_used": ["create_bestpractices"],
+            }
+            return bestpractices_result
+
         if not explicit_non_survey:
+
             should_use_payload = _should_use_survey_payload_tool(question, normalized_history)
             if not should_use_payload:
                 agent_result = _invoke_general_agent(question, normalized_history)

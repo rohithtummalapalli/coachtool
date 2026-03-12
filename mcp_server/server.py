@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+import requests
 from mcp.server.fastmcp import FastMCP
 from openai import AzureOpenAI
 
@@ -30,6 +31,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger("mcp_server")
 _USER_DF_CACHE: dict[str, pd.DataFrame] = {}
+OPENWEBUI_URL = os.getenv("OPENWEBUI_URL", "http://tools.eu-central-1.elasticbeanstalk.com/api/chat/completions")
+OPENWEBUI_MODEL = os.getenv("OPENWEBUI_BESTPRACTICES_MODEL", "bp-gpt")
+OPENWEBUI_TIMEOUT_SECONDS = float(os.getenv("OPENWEBUI_TIMEOUT_SECONDS", "20"))
 
 
 def get_user_dataframe(user_id: str) -> pd.DataFrame:
@@ -49,6 +53,40 @@ def _set_user_dataframe(user_id: str, rows: Any) -> pd.DataFrame:
         df = pd.DataFrame()
     _USER_DF_CACHE[user_id] = df
     return df
+
+
+def _call_bestpractices_api(query: str) -> dict[str, str]:
+    token = os.getenv("OPENWEBUI_API_TOKEN", "reberr").strip()
+    if not token:
+        return {"question": query, "answer": "Best-practices service is not configured."}
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": OPENWEBUI_MODEL,
+        "messages": [{"role": "user", "content": query}],
+        "stream": False,
+    }
+    try:
+        response = requests.post(
+            OPENWEBUI_URL,
+            json=payload,
+            headers=headers,
+            timeout=OPENWEBUI_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+        data = response.json()
+        choices = data.get("choices") if isinstance(data, dict) else []
+        first = choices[0] if isinstance(choices, list) and choices else {}
+        message = first.get("message") if isinstance(first, dict) else {}
+        answer = str(message.get("content", "")).strip() if isinstance(message, dict) else ""
+        if not answer:
+            answer = "Best-practices service returned an empty response."
+        return {"question": query, "answer": answer}
+    except Exception as exc:
+        logger.exception("Best-practices API call failed")
+        return {"question": query, "answer": f"Best-practices service is unavailable: {exc}"}
 
 
 def _normalize_dataframe(df: pd.DataFrame) -> pd.DataFrame:
@@ -1027,6 +1065,32 @@ def hydrate_survey_data(user_id: str, rows: list[dict[str, Any]]) -> str:
     df = _set_user_dataframe(user_id, rows)
     logger.info("Hydrated dataframe rows=%s cols=%s", len(df), len(df.columns))
     return f"Hydrated {len(df)} survey rows for user."
+
+
+@mcp.tool(name="create_bestpractices")
+def create_bestpractices(chat_messages: list[dict[str, str]]) -> dict[str, str]:
+    logger.info("Tool call: create_bestpractices messages=%s", len(chat_messages) if isinstance(chat_messages, list) else -1)
+    if not isinstance(chat_messages, list) or not chat_messages:
+        return {"question": "", "answer": "No chat messages were provided."}
+
+    cleaned: list[dict[str, str]] = []
+    for item in chat_messages[-5:]:
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role", "")).strip().lower()
+        content = str(item.get("content", "")).strip()
+        if role in {"user", "assistant"} and content:
+            cleaned.append({"role": role, "content": content})
+    if not cleaned:
+        return {"question": "", "answer": "No valid chat messages were provided."}
+
+    transcript = "\n".join([f"{msg['role']}: {msg['content']}" for msg in cleaned])
+    prompt = (
+        "Use this chat context to provide practical best-practice actions.\n"
+        "Focus on concrete improvements and prioritized recommendations.\n\n"
+        f"Conversation (last {len(cleaned)} messages):\n{transcript}"
+    )
+    return _call_bestpractices_api(prompt)
 
 
 if __name__ == "__main__":
