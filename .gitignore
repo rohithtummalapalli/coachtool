@@ -17,3 +17,8 @@ wheels/
 # Runtime artifacts
 .files/
 
+
+# Elastic Beanstalk Files
+.elasticbeanstalk/*
+!.elasticbeanstalk/*.cfg.yml
+!.elasticbeanstalk/*.global.yml

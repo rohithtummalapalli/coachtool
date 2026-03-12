@@ -1,0 +1,85 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ragtool-backend
+    command: ["/app/docker/backend-entrypoint.sh"]
+    environment:
+      DJANGO_PORT: "8001"
+      DJANGO_RUN_ADDR: "0.0.0.0:8001"
+      DJANGO_DEBUG: "False"
+      SECURE_SSL_REDIRECT: "True"
+      DATABASE_URL: ${DATABASE_URL}
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/admin/login/', timeout=5); print('ok')\"",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+    restart: unless-stopped
+
+  mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ragtool-mcp
+    command: ["/app/docker/mcp-entrypoint.sh"]
+    environment:
+      MCP_HOST: "0.0.0.0"
+      MCP_PORT: "8765"
+      DJANGO_RUN_ADDR: "backend:8001"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import socket; s=socket.create_connection(('127.0.0.1', 8765), 3); s.close(); print('ok')\"",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+    restart: unless-stopped
+
+  chainlit:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ragtool-chainlit
+    command: ["/app/docker/chainlit-entrypoint.sh"]
+    environment:
+      CHAINLIT_PORT: "8000"
+      DJANGO_RUN_ADDR: "backend:8001"
+      MCP_SERVER_URL: "http://mcp:8765/mcp"
+      CHAINLIT_DATABASE_URL: ${CHAINLIT_DATABASE_URL}
+      DATABASE_URL: ${DATABASE_URL}
+    ports:
+      - "80:8000"
+    depends_on:
+      backend:
+        condition: service_healthy
+      mcp:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/', timeout=5); print('ok')\"",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    volumes:
+      - chainlit_files:/app/.files
+    restart: unless-stopped
+
+volumes:
+  chainlit_files:
