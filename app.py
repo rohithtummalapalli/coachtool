@@ -24,6 +24,7 @@ from chainlit.server import get_data_layer as get_chainlit_server_data_layer
 from chainlit.server import UserParam
 from openai import AsyncAzureOpenAI
 import plotly.graph_objects as go
+import sqlalchemy as sa
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 from services.langchain_agent import predict_loading_stage, run_agent
@@ -902,8 +903,11 @@ async def ensure_chainlit_history_schema() -> None:
                 await conn.execute(text(statement))
 
             for table_name, columns in required_columns.items():
-                result = await conn.execute(text(f'PRAGMA table_info("{table_name}")'))
-                existing = {row[1] for row in result.fetchall()}
+                existing = await conn.run_sync(
+                    lambda sync_conn: {
+                        column["name"] for column in sa.inspect(sync_conn).get_columns(table_name)
+                    }
+                )
                 for column_name, column_type in columns.items():
                     if column_name in existing:
                         continue
