@@ -13,7 +13,13 @@ load_dotenv(ROOT_DIR / ".env")
 
 
 def env(key: str, default: str | None = None) -> str | None:
-    return os.getenv(key, default)
+    value = os.getenv(key)
+    if value is None:
+        return default
+    value = value.strip()
+    if value == "":
+        return default
+    return value
 
 
 def env_bool(key: str, default: bool = False) -> bool:
