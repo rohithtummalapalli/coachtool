@@ -4,7 +4,6 @@
 .elasticbeanstalk
 .venv
 venv
-.chainlit
 __pycache__
 *.pyc
 *.pyo
