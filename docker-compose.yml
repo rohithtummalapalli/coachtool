@@ -1,8 +1,5 @@
 x-app-image: &app-image
-  build:
-    context: .
-    dockerfile: Dockerfile
-  image: ragtool-app:latest
+  image: ${APP_IMAGE}
 
 services:
   backend:
