@@ -1,9 +1,12 @@
+x-app-image: &app-image
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: ragtool-app:latest
+
 services:
   backend:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: ragtool-app:latest
+    <<: *app-image
     container_name: ragtool-backend
     command: ["/app/docker/backend-entrypoint.sh"]
     environment:
@@ -40,7 +43,7 @@ services:
     restart: unless-stopped
 
   mcp:
-    image: ragtool-app:latest
+    <<: *app-image
     container_name: ragtool-mcp
     command: ["/app/docker/mcp-entrypoint.sh"]
     environment:
@@ -77,7 +80,7 @@ services:
     restart: unless-stopped
 
   chainlit:
-    image: ragtool-app:latest
+    <<: *app-image
     container_name: ragtool-chainlit
     command: ["/app/docker/chainlit-entrypoint.sh"]
     environment:
