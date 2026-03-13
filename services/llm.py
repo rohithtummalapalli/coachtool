@@ -17,6 +17,26 @@ def _required_env(name: str) -> str:
     return value
 
 
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
 def _get_client() -> AzureOpenAI:
     return AzureOpenAI(
         azure_endpoint=_required_env("AZURE_OPENAI_ENDPOINT"),
@@ -42,8 +62,8 @@ def generate_answer(question: str, context: Optional[str]) -> str:
 
     response = _get_client().chat.completions.create(
         model=_answer_model(),
-        temperature=float(os.getenv("LLM_TEMPERATURE", "0.2")),
-        max_tokens=int(os.getenv("LLM_MAX_TOKENS", "800")),
+        temperature=_env_float("LLM_TEMPERATURE", 0.2),
+        max_tokens=_env_int("LLM_MAX_TOKENS", 800),
         messages=messages,
     )
     return (response.choices[0].message.content or "").strip()

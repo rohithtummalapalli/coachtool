@@ -404,6 +404,16 @@ def _required_env(name: str) -> str:
     return value
 
 
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
 def _create_llm() -> AzureChatOpenAI:
     deployment = os.getenv("LLM_MODEL") or _required_env("AZURE_OPENAI_MODEL")
     return AzureChatOpenAI(
@@ -411,7 +421,7 @@ def _create_llm() -> AzureChatOpenAI:
         api_key=_required_env("AZURE_OPENAI_API_KEY"),
         api_version=_required_env("AZURE_OPENAI_API_VERSION"),
         azure_deployment=deployment,
-        temperature=float(os.getenv("LLM_TEMPERATURE", "0.2")),
+        temperature=_env_float("LLM_TEMPERATURE", 0.2),
         streaming=True,
     )
 
