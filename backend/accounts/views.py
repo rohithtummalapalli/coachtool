@@ -1,5 +1,6 @@
 import logging
 import os
+import ipaddress
 
 import requests
 from django.contrib.auth.models import Group
@@ -34,7 +35,13 @@ class IsInternalRequest(BasePermission):
             return provided == expected
 
         remote_addr = (request.META.get("REMOTE_ADDR") or "").strip()
-        return remote_addr in {"127.0.0.1", "::1", "localhost"}
+        if remote_addr in {"127.0.0.1", "::1", "localhost"}:
+            return True
+        try:
+            ip = ipaddress.ip_address(remote_addr)
+        except ValueError:
+            return False
+        return ip.is_private or ip.is_loopback
 
 
 def get_survey_token() -> str | None:

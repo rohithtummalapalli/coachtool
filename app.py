@@ -37,6 +37,63 @@ _django_log_handle = None
 _mcp_process: subprocess.Popen | None = None
 
 
+def _normalize_thread_for_frontend(thread: dict[str, Any]) -> dict[str, Any]:
+    steps = thread.get("steps")
+    if not isinstance(steps, list):
+        return thread
+
+    known_ids = {
+        str(step.get("id") or "").strip()
+        for step in steps
+        if isinstance(step, dict) and str(step.get("id") or "").strip()
+    }
+    if not known_ids:
+        return thread
+
+    normalized_steps: list[dict[str, Any]] = []
+    changed = False
+    for step in steps:
+        if not isinstance(step, dict):
+            normalized_steps.append(step)
+            continue
+        parent_id = str(step.get("parentId") or "").strip()
+        if parent_id and parent_id not in known_ids:
+            normalized_step = dict(step)
+            normalized_step["parentId"] = None
+            normalized_steps.append(normalized_step)
+            changed = True
+        else:
+            normalized_steps.append(step)
+
+    if not changed:
+        return thread
+
+    normalized_thread = dict(thread)
+    normalized_thread["steps"] = normalized_steps
+    return normalized_thread
+
+
+class AppSQLAlchemyDataLayer(SQLAlchemyDataLayer):
+    async def get_thread(self, thread_id: str) -> dict[str, Any] | None:
+        thread = await super().get_thread(thread_id)
+        if not isinstance(thread, dict):
+            return thread
+        return _normalize_thread_for_frontend(thread)
+
+    async def get_all_user_threads(
+        self, user_id: str | None = None, thread_id: str | None = None
+    ) -> list[dict[str, Any]] | None:
+        threads = await super().get_all_user_threads(user_id=user_id, thread_id=thread_id)
+        if not isinstance(threads, list):
+            return threads
+        return [
+            _normalize_thread_for_frontend(thread)
+            if isinstance(thread, dict)
+            else thread
+            for thread in threads
+        ]
+
+
 def _encode_blob_key(blob_key: str) -> str:
     return base64.urlsafe_b64encode(blob_key.encode("utf-8")).decode("ascii").rstrip("=")
 
@@ -357,7 +414,7 @@ def start_mcp_server() -> None:
 
 @cl.data_layer
 def get_data_layer():
-    return SQLAlchemyDataLayer(
+    return AppSQLAlchemyDataLayer(
         conninfo=get_chainlit_database_url(),
         storage_provider=_storage_client,
         show_logger=False,
